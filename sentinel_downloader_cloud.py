@@ -348,7 +348,7 @@ if bbox:
         else:
             st.subheader("3. Generar GIF Animado (Serie Temporal)")
             
-            max_imgs = gif_max_images if 'gif_max_images' in locals() else 8
+            max_imgs = gif_max_images if 'gif_max_images' in locals() else 15
             duration = gif_duration if 'gif_duration' in locals() else 500
             
             # Limitar número de imágenes
