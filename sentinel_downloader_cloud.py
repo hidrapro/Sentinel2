@@ -95,7 +95,7 @@ SAT_CONFIG = {
     }
 }
 
-# --- ESTADO INICIAL DEL MAPA Y PERSISTENCIA ---
+# --- ESTADO INICIAL Y PERSISTENCIA ---
 if 'map_center' not in st.session_state:
     st.session_state['map_center'] = [-35.444, -60.884]
 if 'map_zoom' not in st.session_state:
@@ -168,7 +168,7 @@ with st.sidebar:
     if "Animación" in formato_descarga or "Todos" == formato_descarga:
         st.markdown("---")
         st.subheader("🎞️ Ajustes de Animación")
-        anim_format = st.selectbox("Formato de salida", ["GIF Animado", "Video MP4", "Ambos"])
+        anim_format = st.selectbox("Formato de salida", ["GIF Animado", "Video MP4", "Ambos"], index=1)
         gif_duration = st.slider("ms por frame (solo GIF)", 100, 2000, 500)
         video_fps = st.slider("Frames por segundo (solo Video)", 1, 5, 2)
         gif_max_images = st.slider("Cantidad de imágenes objetivo", 3, 50, 15)
@@ -203,7 +203,6 @@ def normalize_image_robust(img_array, percentile_low=2, percentile_high=98, scal
 def add_text_to_image(img_pil, text):
     draw = ImageDraw.Draw(img_pil)
     w, h = img_pil.size
-    # Tamaño de fuente proporcional al ancho del frame para mantener consistencia visual
     fs = int(max(14, w * 0.04)) 
     try: 
         font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", fs)
@@ -212,10 +211,9 @@ def add_text_to_image(img_pil, text):
     
     bb = draw.textbbox((0, 0), text, font=font)
     tw, th = bb[2]-bb[0], bb[3]-bb[1]
-    m = fs // 3 # Margen interno del cartel
+    m = fs // 3 
     x, y = (w - tw) // 2, h - th - m * 3
     
-    # Cartel de fondo (rectángulo semi-transparente)
     draw.rectangle([x-m, y-m, x+tw+m, y+th+m], fill=(0,0,0,160))
     draw.text((x, y), text, fill=(255,255,255), font=font)
     return img_pil
@@ -228,6 +226,7 @@ tile_urls = {
     "Topográfico (OpenTopo)": "https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png"
 }
 
+# Se crea el mapa usando los valores de la sesión
 m = folium.Map(
     location=st.session_state['map_center'], 
     zoom_start=st.session_state['map_zoom'], 
@@ -235,7 +234,7 @@ m = folium.Map(
     attr="Tiles &copy; Esri / OpenTopoMap" if map_style != "OpenStreetMap" else None
 )
 
-# --- DIBUJAR AOI PERSISTENTE ---
+# Dibujar AOI persistente
 if st.session_state['bbox']:
     b = st.session_state['bbox']
     folium.Rectangle(
@@ -250,22 +249,39 @@ if st.session_state['bbox']:
 LocateControl(auto_start=False).add_to(m)
 Draw(draw_options={'polyline':False, 'polygon':False, 'circle':False, 'marker':False, 'circlemarker':False, 'rectangle':True}).add_to(m)
 
-map_data = st_folium(m, width=1200, height=400, key="main_map")
+# st_folium con key estable y sin actualizaciones agresivas de retorno
+map_data = st_folium(
+    m, 
+    width=1200, 
+    height=400, 
+    key="main_map"
+)
 
+# --- SINCRONIZACIÓN DE ESTADO ---
 if map_data:
+    # Actualizamos centro y zoom SOLO si cambiaron significativamente para evitar "rebotes"
     if map_data.get('center'):
-        st.session_state['map_center'] = [map_data['center']['lat'], map_data['center']['lng']]
-    if map_data.get('zoom'):
-        st.session_state['map_zoom'] = map_data['zoom']
+        new_lat = map_data['center']['lat']
+        new_lng = map_data['center']['lng']
+        if abs(new_lat - st.session_state['map_center'][0]) > 0.0001 or \
+           abs(new_lng - st.session_state['map_center'][1]) > 0.0001:
+            st.session_state['map_center'] = [new_lat, new_lng]
     
-    if map_data.get('all_drawings'):
-        coords = map_data['all_drawings'][-1]['geometry']['coordinates'][0]
-        lons, lats = [c[0] for c in coords], [c[1] for c in coords]
-        new_bbox = [min(lons), min(lats), max(lons), max(lats)]
-        
-        if new_bbox != st.session_state['bbox']:
-            st.session_state['bbox'] = new_bbox
-            st.rerun()
+    if map_data.get('zoom'):
+        if map_data['zoom'] != st.session_state['map_zoom']:
+            st.session_state['map_zoom'] = map_data['zoom']
+    
+    # Procesar dibujos sin forzar rerun inmediato
+    if map_data.get('last_active_drawing'):
+        drawing = map_data['last_active_drawing']
+        if drawing.get('geometry'):
+            coords = drawing['geometry']['coordinates'][0]
+            lons, lats = [c[0] for c in coords], [c[1] for c in coords]
+            new_bbox = [min(lons), min(lats), max(lons), max(lats)]
+            if st.session_state['bbox'] != new_bbox:
+                st.session_state['bbox'] = new_bbox
+                # Solo un rerun si realmente cambió el área elegida
+                st.rerun()
 
 # --- LÓGICA DE BÚSQUEDA ---
 if st.session_state['bbox']:
@@ -331,7 +347,6 @@ if 'scenes_before' in st.session_state:
                             Image.fromarray(img_8bit).save(buf, format='JPEG', quality=95)
                             st.download_button(f"📷 {fname}.jpg", buf.getvalue(), f"{fname}.jpg")
 
-        # --- LÓGICA DE ANIMACIÓN (Estandarización de escala visual) ---
         if "Animación" in formato_descarga or "Todos" == formato_descarga:
             st.markdown("---")
             if st.button("🎬 Generar Serie Temporal (Video/GIF)"):
@@ -353,9 +368,8 @@ if 'scenes_before' in st.session_state:
                             
                             img_8bit = normalize_image_robust(img_np, percentil_bajo, percentil_alto, conf["scale"], conf["offset"])
                             
-                            # Estandarización de tamaño para que el texto sea siempre proporcional
                             img_pil = Image.fromarray(img_8bit)
-                            base_w = 800 # Ancho base para la animación
+                            base_w = 800 
                             curr_w, curr_h = img_pil.size
                             if curr_w != base_w:
                                 new_h = int(curr_h * (base_w / curr_w))
@@ -370,13 +384,11 @@ if 'scenes_before' in st.session_state:
                         pil_images = [f[1] for f in frames_list]
                         numpy_frames = [np.array(img) for img in pil_images]
 
-                        # Generar GIF
                         if anim_format in ["GIF Animado", "Ambos"]:
                             buf_gif = io.BytesIO()
                             pil_images[0].save(buf_gif, format='GIF', save_all=True, append_images=pil_images[1:], duration=gif_duration, loop=0)
                             st.session_state['anim_gif'] = buf_gif.getvalue()
 
-                        # Generar Video
                         if anim_format in ["Video MP4", "Ambos"]:
                             try:
                                 with tempfile.NamedTemporaryFile(suffix='.mp4', delete=False) as tmp_vid:
@@ -390,7 +402,6 @@ if 'scenes_before' in st.session_state:
                     else:
                         st.error("No se pudieron generar frames válidos.")
 
-            # --- RENDERIZADO AUTOMÁTICO ---
             if st.session_state['anim_gif'] is not None:
                 st.image(st.session_state['anim_gif'], caption="Serie Temporal Generada (GIF)")
                 st.download_button("📥 Descargar GIF Animado", st.session_state['anim_gif'], "serie_satelital.gif")
