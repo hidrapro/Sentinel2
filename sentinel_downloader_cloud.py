@@ -130,14 +130,14 @@ def normalize_image_robust(img_arr, p_low=2, p_high=98, scale=1.0, offset=0.0):
         return np.zeros((*img.shape, 3), dtype=np.uint8)
 
 def add_text_to_image(img, text):
-    """Añadir texto a una imagen PIL con tamaño masivo y búsqueda de fuentes del sistema."""
+    """Añadir texto a una imagen PIL con tamaño equilibrado (7% del ancho)."""
     draw = ImageDraw.Draw(img)
     
-    # Aumentado al 15% del ancho de la imagen para que sea masivo
-    font_size = int(img.width * 0.15)
+    # Reducido al 7% del ancho de la imagen (antes 15%)
+    font_size = int(img.width * 0.07)
     
     font = None
-    # Rutas comunes de fuentes en Linux/Streamlit Cloud para asegurar que sea escalable
+    # Rutas comunes de fuentes en Linux/Streamlit Cloud
     font_paths = [
         "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
         "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
@@ -160,9 +160,9 @@ def add_text_to_image(img, text):
     tw = bbox[2] - bbox[0]
     th = bbox[3] - bbox[1]
     
-    # Padding y márgenes proporcionales al nuevo tamaño de fuente
-    padding = int(font_size * 0.2)
-    margin_bottom = int(font_size * 0.3)
+    # Padding y márgenes ajustados al nuevo tamaño
+    padding = int(font_size * 0.15)
+    margin_bottom = int(font_size * 0.25)
     
     # Posición central inferior
     x_pos = (img.width - tw) // 2
@@ -175,10 +175,10 @@ def add_text_to_image(img, text):
         fill=(0, 0, 0, 180)
     )
     
-    # Dibujar texto (si es la fuente default, la dibujamos 2 veces para que se vea más gruesa)
+    # Dibujar texto
     draw.text((x_pos, y_pos), text, fill=(255, 255, 255), font=font)
-    if font_size > 20 and font == ImageFont.load_default():
-        # Efecto de grosor para la fuente diminuta por defecto
+    if font == ImageFont.load_default():
+        # Efecto de grosor para la fuente por defecto si falla el cargado
         draw.text((x_pos+1, y_pos), text, fill=(255, 255, 255), font=font)
         draw.text((x_pos, y_pos+1), text, fill=(255, 255, 255), font=font)
 
