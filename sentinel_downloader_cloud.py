@@ -240,7 +240,6 @@ tile_urls = {
     "Topográfico (OpenTopo)": "https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png"
 }
 
-# Usar una clave estática y evitar reinyectar el centro si ya está en sesión para prevenir el rebote
 m = folium.Map(
     location=st.session_state['map_center'], 
     zoom_start=st.session_state['map_zoom'], 
@@ -261,7 +260,6 @@ if st.session_state['bbox']:
 LocateControl(auto_start=False).add_to(m)
 Draw(draw_options={'polyline':False, 'polygon':False, 'circle':False, 'marker':False, 'circlemarker':False, 'rectangle':True}).add_to(m)
 
-# El truco para evitar el salto atrás es el redondeo y la gestión pasiva del estado
 map_data = st_folium(
     m, 
     width=1200, 
@@ -269,13 +267,12 @@ map_data = st_folium(
     key="main_map"
 )
 
-# --- PROCESAMIENTO DE DATOS DEL MAPA (SIN ST.RERUN AGRESIVO) ---
+# --- PROCESAMIENTO DE DATOS DEL MAPA ---
 if map_data:
     # Captura del centro con redondeo para estabilidad
     if map_data.get('center'):
         c_lat = round(map_data['center']['lat'], 4)
         c_lng = round(map_data['center']['lng'], 4)
-        # Solo actualizamos el estado si el cambio es significativo (evita jitter)
         if abs(c_lat - st.session_state['map_center'][0]) > 0.001 or \
            abs(c_lng - st.session_state['map_center'][1]) > 0.001:
             st.session_state['map_center'] = [c_lat, c_lng]
@@ -284,17 +281,18 @@ if map_data:
         if map_data['zoom'] != st.session_state['map_zoom']:
             st.session_state['map_zoom'] = map_data['zoom']
     
-    # Captura del BBOX con normalización de longitud (Japón/Global)
-    if map_data.get('all_drawings') and len(map_data['all_drawings']) > 0:
-        drawing = map_data['all_drawings'][-1]
-        if drawing.get('geometry'):
-            coords = drawing['geometry']['coordinates'][0]
-            # Normalizamos longitudes para evitar el error de Planetary Computer
-            lons = [wrap_longitude(c[0]) for c in coords]
-            lats = [c[1] for c in coords]
-            new_bbox = [min(lons), min(lats), max(lons), max(lats)]
-            if st.session_state['bbox'] != new_bbox:
-                st.session_state['bbox'] = new_bbox
+    # Captura del BBOX: Usamos 'last_active_drawing' para detectar el dibujo inmediatamente
+    drawing = map_data.get('last_active_drawing')
+    if drawing and drawing.get('geometry'):
+        coords = drawing['geometry']['coordinates'][0]
+        lons = [wrap_longitude(c[0]) for c in coords]
+        lats = [c[1] for c in coords]
+        new_bbox = [min(lons), min(lats), max(lons), max(lats)]
+        
+        # Solo actualizamos y forzamos rerun si el AOI cambió (dibujo nuevo)
+        if st.session_state['bbox'] != new_bbox:
+            st.session_state['bbox'] = new_bbox
+            st.rerun()
 
 # --- LÓGICA DE BÚSQUEDA ---
 if st.session_state['bbox']:
@@ -348,7 +346,6 @@ if 'scenes_before' in st.session_state:
     if not all_scenes:
         st.warning("No hay escenas.")
     else:
-        # EPSG dinámico para soporte GLOBAL (Japón, etc.)
         dynamic_epsg = get_utm_epsg(st.session_state['bbox'])
 
         if "Animación" not in formato_descarga and "Todos" != formato_descarga:
