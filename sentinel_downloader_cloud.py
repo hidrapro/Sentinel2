@@ -18,7 +18,7 @@ import imageio
 
 # --- CONFIGURACIÓN DE PÁGINA ---
 st.set_page_config(page_title="Satelites LandSat y Sentinel 2", layout="wide", page_icon="🛰️")
-st.title("🛰️ Visualizador y descarga de recortes")
+st.title("🛰️ Visualizador Imagenes LandSat y Sentinel 2, descarga de recortes y video con series de tiempo")
 
 # --- DICCIONARIO DE CONFIGURACIÓN POR SATÉLITE ---
 SAT_CONFIG = {
@@ -130,13 +130,13 @@ def normalize_image_robust(img_arr, p_low=2, p_high=98, scale=1.0, offset=0.0):
         return np.zeros((*img.shape, 3), dtype=np.uint8)
 
 def add_text_to_image(img, text):
-    """Añadir texto a una imagen PIL con tamaño proporcional para asegurar homogeneidad."""
+    """Añadir texto a una imagen PIL con tamaño duplicado para máxima visibilidad."""
     draw = ImageDraw.Draw(img)
     
-    # Tamaño de fuente como 5% del ancho de la imagen (ideal para video)
-    font_size = int(img.width * 0.05)
-    padding = int(font_size * 0.3)
-    margin_bottom = int(font_size * 0.5)
+    # Tamaño de fuente aumentado al 10% del ancho de la imagen (el doble que antes)
+    font_size = int(img.width * 0.10)
+    padding = int(font_size * 0.25)
+    margin_bottom = int(font_size * 0.4)
 
     try:
         font = ImageFont.truetype("arial.ttf", font_size)
@@ -152,11 +152,11 @@ def add_text_to_image(img, text):
     x_pos = (img.width - tw) // 2
     y_pos = img.height - th - margin_bottom
     
-    # Dibujar fondo (rectángulo)
+    # Dibujar fondo (rectángulo) con opacidad para contraste
     draw.rectangle(
         [(x_pos - padding, y_pos - padding), 
          (x_pos + tw + padding, y_pos + th + padding)], 
-        fill=(0, 0, 0, 180)
+        fill=(0, 0, 0, 160)
     )
     
     # Dibujar texto
@@ -324,8 +324,8 @@ if bbox:
                                 pil_img = Image.fromarray(img_8bit)
                                 
                                 # --- PASO CRUCIAL PARA LA HOMOGENEIDAD ---
-                                # Redimensionamos todas las imágenes a un ancho estándar (ej: 1000px)
-                                # Esto asegura que la leyenda se vea del mismo tamaño sin importar el satélite
+                                # Redimensionamos todas las imágenes a un ancho estándar (1000px)
+                                # Esto asegura que la leyenda se vea igual sin importar el satélite
                                 target_w = 1000
                                 h_resize = int(pil_img.height * (target_w / pil_img.width))
                                 pil_img = pil_img.resize((target_w, h_resize), Image.Resampling.LANCZOS)
