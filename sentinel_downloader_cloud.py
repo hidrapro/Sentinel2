@@ -124,6 +124,8 @@ if 'anim_gif' not in st.session_state:
     st.session_state['anim_gif'] = None
 if 'anim_vid' not in st.session_state:
     st.session_state['anim_vid'] = None
+if 'last_map_style' not in st.session_state:
+    st.session_state['last_map_style'] = "OpenStreetMap"
 
 # --- SIDEBAR: CONFIGURACIÓN ---
 with st.sidebar:
@@ -240,6 +242,8 @@ tile_urls = {
     "Topográfico (OpenTopo)": "https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png"
 }
 
+# Solo forzamos el re-centrado si el estilo del mapa cambió.
+# Si el mapa es el mismo, dejamos que el componente mantenga su propia navegación interna.
 m = folium.Map(
     location=st.session_state['map_center'], 
     zoom_start=st.session_state['map_zoom'], 
@@ -260,28 +264,24 @@ if st.session_state['bbox']:
 LocateControl(auto_start=False).add_to(m)
 Draw(draw_options={'polyline':False, 'polygon':False, 'circle':False, 'marker':False, 'circlemarker':False, 'rectangle':True}).add_to(m)
 
+# El truco para evitar el rebote es usar una clave estable y no forzar coordenadas en cada ejecución.
 map_data = st_folium(
     m, 
     width=1200, 
     height=400, 
-    key="main_map"
+    key="main_map",
+    returned_objects=["center", "zoom", "last_active_drawing", "all_drawings"]
 )
 
 # --- PROCESAMIENTO DE DATOS DEL MAPA ---
 if map_data:
-    # Captura del centro con redondeo para estabilidad
+    # Captura del centro y zoom para persistencia
     if map_data.get('center'):
-        c_lat = round(map_data['center']['lat'], 4)
-        c_lng = round(map_data['center']['lng'], 4)
-        if abs(c_lat - st.session_state['map_center'][0]) > 0.001 or \
-           abs(c_lng - st.session_state['map_center'][1]) > 0.001:
-            st.session_state['map_center'] = [c_lat, c_lng]
-    
+        st.session_state['map_center'] = [map_data['center']['lat'], map_data['center']['lng']]
     if map_data.get('zoom'):
-        if map_data['zoom'] != st.session_state['map_zoom']:
-            st.session_state['map_zoom'] = map_data['zoom']
+        st.session_state['map_zoom'] = map_data['zoom']
     
-    # Captura del BBOX: Usamos 'last_active_drawing' para detectar el dibujo inmediatamente
+    # Manejo del dibujo (AOI)
     drawing = map_data.get('last_active_drawing')
     if drawing and drawing.get('geometry'):
         coords = drawing['geometry']['coordinates'][0]
@@ -289,10 +289,14 @@ if map_data:
         lats = [c[1] for c in coords]
         new_bbox = [min(lons), min(lats), max(lons), max(lats)]
         
-        # Solo actualizamos y forzamos rerun si el AOI cambió (dibujo nuevo)
         if st.session_state['bbox'] != new_bbox:
             st.session_state['bbox'] = new_bbox
             st.rerun()
+
+# Si cambiamos el estilo del mapa en la barra lateral, guardamos y forzamos refresco
+if map_style != st.session_state['last_map_style']:
+    st.session_state['last_map_style'] = map_style
+    st.rerun()
 
 # --- LÓGICA DE BÚSQUEDA ---
 if st.session_state['bbox']:
