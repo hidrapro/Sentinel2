@@ -98,16 +98,20 @@ SAT_CONFIG = {
 # --- FUNCIONES DE SOPORTE GEOGRÁFICO ---
 def get_utm_epsg(bbox):
     """Calcula automáticamente el EPSG de la zona UTM correspondiente al área."""
-    if not bbox: return 3857 # Fallback a Web Mercator si no hay área
+    if not bbox: return 3857 
     lon = (bbox[0] + bbox[2]) / 2
     lat = (bbox[1] + bbox[3]) / 2
     utm_zone = int((lon + 180) / 6) + 1
     epsg_base = 32600 if lat >= 0 else 32700
     return epsg_base + utm_zone
 
+def wrap_longitude(lon):
+    """Normaliza la longitud al rango [-180, 180] para evitar errores de API STAC."""
+    return (lon + 180) % 360 - 180
+
 # --- ESTADO INICIAL Y PERSISTENCIA ---
 if 'map_center' not in st.session_state:
-    st.session_state['map_center'] = [-35.444, -60.884]
+    st.session_state['map_center'] = [-35.4440, -60.8840]
 if 'map_zoom' not in st.session_state:
     st.session_state['map_zoom'] = 13
 if 'bbox' not in st.session_state:
@@ -236,6 +240,7 @@ tile_urls = {
     "Topográfico (OpenTopo)": "https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png"
 }
 
+# Usar una clave estática y evitar reinyectar el centro si ya está en sesión para prevenir el rebote
 m = folium.Map(
     location=st.session_state['map_center'], 
     zoom_start=st.session_state['map_zoom'], 
@@ -250,13 +255,13 @@ if st.session_state['bbox']:
         color="#ff7800",
         fill=True,
         fill_opacity=0.2,
-        weight=2,
-        tooltip="Área Seleccionada"
+        weight=2
     ).add_to(m)
 
 LocateControl(auto_start=False).add_to(m)
 Draw(draw_options={'polyline':False, 'polygon':False, 'circle':False, 'marker':False, 'circlemarker':False, 'rectangle':True}).add_to(m)
 
+# El truco para evitar el salto atrás es el redondeo y la gestión pasiva del estado
 map_data = st_folium(
     m, 
     width=1200, 
@@ -264,23 +269,29 @@ map_data = st_folium(
     key="main_map"
 )
 
+# --- PROCESAMIENTO DE DATOS DEL MAPA (SIN ST.RERUN AGRESIVO) ---
 if map_data:
+    # Captura del centro con redondeo para estabilidad
     if map_data.get('center'):
-        new_lat = round(map_data['center']['lat'], 4)
-        new_lng = round(map_data['center']['lng'], 4)
-        if abs(new_lat - st.session_state['map_center'][0]) > 0.001 or \
-           abs(new_lng - st.session_state['map_center'][1]) > 0.001:
-            st.session_state['map_center'] = [new_lat, new_lng]
+        c_lat = round(map_data['center']['lat'], 4)
+        c_lng = round(map_data['center']['lng'], 4)
+        # Solo actualizamos el estado si el cambio es significativo (evita jitter)
+        if abs(c_lat - st.session_state['map_center'][0]) > 0.001 or \
+           abs(c_lng - st.session_state['map_center'][1]) > 0.001:
+            st.session_state['map_center'] = [c_lat, c_lng]
     
     if map_data.get('zoom'):
         if map_data['zoom'] != st.session_state['map_zoom']:
             st.session_state['map_zoom'] = map_data['zoom']
     
+    # Captura del BBOX con normalización de longitud (Japón/Global)
     if map_data.get('all_drawings') and len(map_data['all_drawings']) > 0:
         drawing = map_data['all_drawings'][-1]
         if drawing.get('geometry'):
             coords = drawing['geometry']['coordinates'][0]
-            lons, lats = [c[0] for c in coords], [c[1] for c in coords]
+            # Normalizamos longitudes para evitar el error de Planetary Computer
+            lons = [wrap_longitude(c[0]) for c in coords]
+            lats = [c[1] for c in coords]
             new_bbox = [min(lons), min(lats), max(lons), max(lats)]
             if st.session_state['bbox'] != new_bbox:
                 st.session_state['bbox'] = new_bbox
@@ -288,10 +299,9 @@ if map_data:
 # --- LÓGICA DE BÚSQUEDA ---
 if st.session_state['bbox']:
     if st.button(f"🔍 Buscar Imágenes"):
-        # Verificación de AOI válido
         bbox = st.session_state['bbox']
         if abs(bbox[2] - bbox[0]) < 1e-6 or abs(bbox[3] - bbox[1]) < 1e-6:
-            st.error("El área seleccionada es inválida o demasiado pequeña.")
+            st.error("Área inválida.")
         else:
             with st.spinner("Consultando catálogo STAC..."):
                 try:
@@ -304,7 +314,6 @@ if st.session_state['bbox']:
                     
                     fecha_inicio, fecha_fin = fecha_referencia - timedelta(days=365), fecha_referencia + timedelta(days=365)
                     
-                    # Búsqueda directa (un solo intento)
                     search = catalog.search(
                         collections=[conf["collection"]],
                         bbox=bbox,
@@ -322,10 +331,10 @@ if st.session_state['bbox']:
                         st.session_state['anim_vid'] = None
                         st.rerun()
                     else:
-                        st.error("No se encontraron imágenes en el área.")
+                        st.error("No se encontraron imágenes.")
                 
                 except pystac_client.exceptions.APIError as api_err:
-                    st.error("Error de conexión con Planetary Computer. Por favor, intenta de nuevo en unos segundos.")
+                    st.error("Error de API: Verifica el área o intenta de nuevo.")
                     st.info(f"Detalle técnico: {str(api_err)}")
                 except Exception as e:
                     st.error(f"Error inesperado: {str(e)}")
@@ -337,14 +346,14 @@ if 'scenes_before' in st.session_state:
     all_scenes.sort(key=lambda x: x.datetime)
     
     if not all_scenes:
-        st.warning("No hay escenas disponibles (revisa el filtro de exclusión).")
+        st.warning("No hay escenas.")
     else:
-        # Calcular EPSG dinámico para esta zona del mundo
+        # EPSG dinámico para soporte GLOBAL (Japón, etc.)
         dynamic_epsg = get_utm_epsg(st.session_state['bbox'])
 
         if "Animación" not in formato_descarga and "Todos" != formato_descarga:
             scene_opts = {f"{s.datetime.strftime('%d/%m/%Y')} | Nubes: {s.properties[conf['cloud_key']]:.1f}%": i for i, s in enumerate(all_scenes)}
-            idx_name = st.selectbox("Seleccionar imagen específica:", list(scene_opts.keys()))
+            idx_name = st.selectbox("Seleccionar imagen:", list(scene_opts.keys()))
             item = all_scenes[scene_opts[idx_name]]
 
             col1, col2 = st.columns(2)
@@ -427,15 +436,15 @@ if 'scenes_before' in st.session_state:
                         
                         status.update(label="✅ Serie temporal lista", state="complete")
                     else:
-                        st.error("No se pudieron generar frames válidos.")
+                        st.error("No se pudieron generar frames.")
 
             if st.session_state['anim_gif'] is not None:
-                st.image(st.session_state['anim_gif'], caption="Serie Temporal Generada (GIF)")
-                st.download_button("📥 Descargar GIF Animado", st.session_state['anim_gif'], "serie_satelital.gif")
+                st.image(st.session_state['anim_gif'], caption="GIF")
+                st.download_button("📥 Descargar GIF", st.session_state['anim_gif'], "serie.gif")
 
             if st.session_state['anim_vid'] is not None:
                 st.video(st.session_state['anim_vid'])
-                st.download_button("📥 Descargar Video MP4", st.session_state['anim_vid'], "serie_satelital.mp4")
+                st.download_button("📥 Descargar MP4", st.session_state['anim_vid'], "serie.mp4")
 
 st.markdown("---")
 st.caption("Notas: Landsat 1-3 (60m MSS), Landsat 4-9 (30m TM/OLI).")
