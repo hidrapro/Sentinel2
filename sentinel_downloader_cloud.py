@@ -95,11 +95,17 @@ SAT_CONFIG = {
     }
 }
 
-# --- ESTADO INICIAL DEL MAPA ---
+# --- ESTADO INICIAL DEL MAPA Y PERSISTENCIA ---
 if 'map_center' not in st.session_state:
     st.session_state['map_center'] = [-35.444, -60.884]
 if 'map_zoom' not in st.session_state:
     st.session_state['map_zoom'] = 13
+if 'bbox' not in st.session_state:
+    st.session_state['bbox'] = None
+if 'preview_img' not in st.session_state:
+    st.session_state['preview_img'] = None
+if 'preview_caption' not in st.session_state:
+    st.session_state['preview_caption'] = ""
 
 # --- SIDEBAR: CONFIGURACIÓN ---
 with st.sidebar:
@@ -212,7 +218,6 @@ tile_urls = {
     "Topográfico (OpenTopo)": "https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png"
 }
 
-# Se utilizan las coordenadas de la sesión para inicializar el mapa
 m = folium.Map(
     location=st.session_state['map_center'], 
     zoom_start=st.session_state['map_zoom'], 
@@ -220,36 +225,34 @@ m = folium.Map(
     attr="Tiles &copy; Esri / OpenTopoMap" if map_style != "OpenStreetMap" else None
 )
 
-# Cambiado auto_start a False para que el GPS no mueva el mapa solo cada vez que se refresca la página
 LocateControl(auto_start=False).add_to(m)
 Draw(draw_options={'polyline':False, 'polygon':False, 'circle':False, 'marker':False, 'circlemarker':False, 'rectangle':True}).add_to(m)
 
-# El mapa devuelve su estado actual
 map_data = st_folium(m, width=1200, height=400, key="main_map")
 
-# Si el usuario movió el mapa, guardamos la nueva ubicación en la sesión
+# Persistencia de posición y zoom
 if map_data:
     if map_data.get('center'):
         st.session_state['map_center'] = [map_data['center']['lat'], map_data['center']['lng']]
     if map_data.get('zoom'):
         st.session_state['map_zoom'] = map_data['zoom']
-
-bbox = None
-if map_data and map_data.get('all_drawings'):
-    coords = map_data['all_drawings'][-1]['geometry']['coordinates'][0]
-    lons, lats = [c[0] for c in coords], [c[1] for c in coords]
-    bbox = [min(lons), min(lats), max(lons), max(lats)]
+    
+    # Persistencia del dibujo (AOI)
+    if map_data.get('all_drawings'):
+        coords = map_data['all_drawings'][-1]['geometry']['coordinates'][0]
+        lons, lats = [c[0] for c in coords], [c[1] for c in coords]
+        st.session_state['bbox'] = [min(lons), min(lats), max(lons), max(lats)]
 
 # --- LÓGICA DE BÚSQUEDA ---
-if bbox:
+# Usamos el bbox de la sesión para que no desaparezca el botón de búsqueda
+if st.session_state['bbox']:
     if st.button(f"🔍 Buscar Imágenes"):
         with st.spinner("Consultando catálogo STAC..."):
             catalog = pystac_client.Client.open("https://planetarycomputer.microsoft.com/api/stac/v1", modifier=planetary_computer.sign_inplace)
             query_params = {conf["cloud_key"]: {"lt": max_cloud}}
             if conf["platform"]: query_params["platform"] = {"in": conf["platform"]}
-            common_args = {"collections": [conf["collection"]], "bbox": bbox, "query": query_params}
+            common_args = {"collections": [conf["collection"]], "bbox": st.session_state['bbox'], "query": query_params}
             
-            # Ventana amplia para capturar frames
             fecha_inicio, fecha_fin = fecha_referencia - timedelta(days=365), fecha_referencia + timedelta(days=365)
             search = catalog.search(**common_args, datetime=f"{fecha_inicio.isoformat()}/{fecha_fin.isoformat()}", max_items=100)
             
@@ -257,99 +260,104 @@ if bbox:
             if all_items:
                 st.session_state['scenes_before'] = [i for i in all_items if i.datetime < fecha_referencia.replace(tzinfo=i.datetime.tzinfo)]
                 st.session_state['scenes_after'] = [i for i in all_items if i.datetime >= fecha_referencia.replace(tzinfo=i.datetime.tzinfo)]
+                # Al buscar nuevas imágenes, limpiamos la previa anterior
+                st.session_state['preview_img'] = None
                 st.rerun()
             else:
                 st.error("No se encontraron imágenes en el área.")
 
-    if 'scenes_before' in st.session_state:
-        full_pool = st.session_state['scenes_before'] + st.session_state['scenes_after']
-        all_scenes = [s for s in full_pool if s.datetime.strftime('%d/%m/%Y') not in exclude_dates]
-        all_scenes.sort(key=lambda x: x.datetime)
-        
-        if not all_scenes:
-            st.warning("No hay escenas disponibles (revisa el filtro de exclusión).")
-        else:
-            if "Animación" not in formato_descarga and "Todos" != formato_descarga:
-                scene_opts = {f"{s.datetime.strftime('%d/%m/%Y')} | Nubes: {s.properties[conf['cloud_key']]:.1f}%": i for i, s in enumerate(all_scenes)}
-                idx_name = st.selectbox("Seleccionar imagen específica:", list(scene_opts.keys()))
-                item = all_scenes[scene_opts[idx_name]]
+# --- MOSTRAR RESULTADOS (Independiente del estado actual del mapa) ---
+if 'scenes_before' in st.session_state:
+    full_pool = st.session_state['scenes_before'] + st.session_state['scenes_after']
+    all_scenes = [s for s in full_pool if s.datetime.strftime('%d/%m/%Y') not in exclude_dates]
+    all_scenes.sort(key=lambda x: x.datetime)
+    
+    if not all_scenes:
+        st.warning("No hay escenas disponibles (revisa el filtro de exclusión).")
+    else:
+        if "Animación" not in formato_descarga and "Todos" != formato_descarga:
+            scene_opts = {f"{s.datetime.strftime('%d/%m/%Y')} | Nubes: {s.properties[conf['cloud_key']]:.1f}%": i for i, s in enumerate(all_scenes)}
+            idx_name = st.selectbox("Seleccionar imagen específica:", list(scene_opts.keys()))
+            item = all_scenes[scene_opts[idx_name]]
 
-                col1, col2 = st.columns(2)
-                with col1:
-                    if st.button("🖼️ Vista Previa"):
-                        data_prev = stackstac.stack(item, assets=conf["assets"], bounds_latlon=bbox, epsg=32720, resolution=conf["res"]*2).squeeze().compute()
-                        img = normalize_image_robust(np.moveaxis(data_prev.values, 0, -1), percentil_bajo, percentil_alto, conf["scale"], conf["offset"])
-                        st.image(img, use_container_width=True, caption=f"Previa: {idx_name}")
-                with col2:
-                    if st.button("🚀 Descargar HD"):
-                        with st.status("Procesando datos HD..."):
-                            data = stackstac.stack(item, assets=conf["assets"], bounds_latlon=bbox, epsg=32720, resolution=res_final).squeeze()
-                            fname = f"{sat_choice.replace(' ', '_')}_{item.datetime.strftime('%Y%m%d')}"
-                            if "GeoTIFF" in formato_descarga or "Todos" == formato_descarga:
-                                with tempfile.NamedTemporaryFile(suffix='.tif', delete=False) as tmp:
-                                    data.rio.to_raster(tmp.name)
-                                    with open(tmp.name, 'rb') as f: st.download_button(f"📥 {fname}.tif", f.read(), f"{fname}.tif")
-                            if "JPG" in formato_descarga or "Todos" == formato_descarga:
-                                data_np = data.compute().values
-                                img_8bit = normalize_image_robust(np.moveaxis(data_np, 0, -1), percentil_bajo, percentil_alto, conf["scale"], conf["offset"])
-                                buf = io.BytesIO()
-                                Image.fromarray(img_8bit).save(buf, format='JPEG', quality=95)
-                                st.download_button(f"📷 {fname}.jpg", buf.getvalue(), f"{fname}.jpg")
+            col1, col2 = st.columns(2)
+            with col1:
+                if st.button("🖼️ Vista Previa"):
+                    # Generamos la previa y la guardamos en el estado
+                    data_prev = stackstac.stack(item, assets=conf["assets"], bounds_latlon=st.session_state['bbox'], epsg=32720, resolution=conf["res"]*2).squeeze().compute()
+                    img = normalize_image_robust(np.moveaxis(data_prev.values, 0, -1), percentil_bajo, percentil_alto, conf["scale"], conf["offset"])
+                    st.session_state['preview_img'] = img
+                    st.session_state['preview_caption'] = f"Previa: {idx_name}"
+                
+                # Mostrar la previa si existe en la sesión
+                if st.session_state['preview_img'] is not None:
+                    st.image(st.session_state['preview_img'], use_container_width=True, caption=st.session_state['preview_caption'])
 
-            # --- LÓGICA DE ANIMACIÓN (GIF / MP4) ---
-            if "Animación" in formato_descarga or "Todos" == formato_descarga:
-                st.markdown("---")
-                if st.button("🎬 Generar Serie Temporal (Video/GIF)"):
-                    frames_list = []
-                    pool = sorted(all_scenes, key=lambda x: (abs((x.datetime.replace(tzinfo=None) - fecha_referencia).days), x.properties[conf['cloud_key']]))
+            with col2:
+                if st.button("🚀 Descargar HD"):
+                    with st.status("Procesando datos HD..."):
+                        data = stackstac.stack(item, assets=conf["assets"], bounds_latlon=st.session_state['bbox'], epsg=32720, resolution=res_final).squeeze()
+                        fname = f"{sat_choice.replace(' ', '_')}_{item.datetime.strftime('%Y%m%d')}"
+                        if "GeoTIFF" in formato_descarga or "Todos" == formato_descarga:
+                            with tempfile.NamedTemporaryFile(suffix='.tif', delete=False) as tmp:
+                                data.rio.to_raster(tmp.name)
+                                with open(tmp.name, 'rb') as f: st.download_button(f"📥 {fname}.tif", f.read(), f"{fname}.tif")
+                        if "JPG" in formato_descarga or "Todos" == formato_descarga:
+                            data_np = data.compute().values
+                            img_8bit = normalize_image_robust(np.moveaxis(data_np, 0, -1), percentil_bajo, percentil_alto, conf["scale"], conf["offset"])
+                            buf = io.BytesIO()
+                            Image.fromarray(img_8bit).save(buf, format='JPEG', quality=95)
+                            st.download_button(f"📷 {fname}.jpg", buf.getvalue(), f"{fname}.jpg")
+
+        # --- LÓGICA DE ANIMACIÓN ---
+        if "Animación" in formato_descarga or "Todos" == formato_descarga:
+            st.markdown("---")
+            if st.button("🎬 Generar Serie Temporal (Video/GIF)"):
+                frames_list = []
+                pool = sorted(all_scenes, key=lambda x: (abs((x.datetime.replace(tzinfo=None) - fecha_referencia).days), x.properties[conf['cloud_key']]))
+                
+                with st.status("Procesando frames...") as status:
+                    processed_count = 0
+                    for s in pool:
+                        if processed_count >= gif_max_images: break
+                        try:
+                            date_str = s.datetime.strftime('%d/%m/%Y')
+                            status.update(label=f"Procesando frame {processed_count + 1}: {date_str}...")
+                            data_f = stackstac.stack(s, assets=conf["assets"], bounds_latlon=st.session_state['bbox'], epsg=32720, resolution=conf["res"]*2).squeeze().compute()
+                            img_np = np.moveaxis(data_f.values, 0, -1)
+                            
+                            nodata_mask = np.any(np.isnan(img_np) | (img_np <= 0), axis=-1)
+                            if np.mean(nodata_mask) > 0.25:
+                                continue
+                            
+                            img_8bit = normalize_image_robust(img_np, percentil_bajo, percentil_alto, conf["scale"], conf["offset"])
+                            frames_list.append((s.datetime, add_text_to_image(Image.fromarray(img_8bit), date_str)))
+                            processed_count += 1
+                        except: continue
                     
-                    with st.status("Procesando frames...") as status:
-                        processed_count = 0
-                        for s in pool:
-                            if processed_count >= gif_max_images: break
+                    if frames_list:
+                        frames_list.sort(key=lambda x: x[0])
+                        pil_images = [f[1] for f in frames_list]
+                        numpy_frames = [np.array(img) for img in pil_images]
+
+                        if anim_format in ["GIF Animado", "Ambos"]:
+                            buf_gif = io.BytesIO()
+                            pil_images[0].save(buf_gif, format='GIF', save_all=True, append_images=pil_images[1:], duration=gif_duration, loop=0)
+                            st.image(buf_gif.getvalue(), caption="Vista Previa GIF")
+                            st.download_button("📥 Descargar GIF", buf_gif.getvalue(), "serie_satelital.gif")
+
+                        if anim_format in ["Video MP4", "Ambos"]:
                             try:
-                                date_str = s.datetime.strftime('%d/%m/%Y')
-                                status.update(label=f"Procesando frame {processed_count + 1}: {date_str}...")
-                                data_f = stackstac.stack(s, assets=conf["assets"], bounds_latlon=bbox, epsg=32720, resolution=conf["res"]*2).squeeze().compute()
-                                img_np = np.moveaxis(data_f.values, 0, -1)
-                                
-                                nodata_mask = np.any(np.isnan(img_np) | (img_np <= 0), axis=-1)
-                                if np.mean(nodata_mask) > 0.25:
-                                    continue
-                                
-                                img_8bit = normalize_image_robust(img_np, percentil_bajo, percentil_alto, conf["scale"], conf["offset"])
-                                frames_list.append((s.datetime, add_text_to_image(Image.fromarray(img_8bit), date_str)))
-                                processed_count += 1
-                            except: continue
-                        
-                        if frames_list:
-                            frames_list.sort(key=lambda x: x[0])
-                            pil_images = [f[1] for f in frames_list]
-                            numpy_frames = [np.array(img) for img in pil_images]
-
-                            # Generación GIF
-                            if anim_format in ["GIF Animado", "Ambos"]:
-                                buf_gif = io.BytesIO()
-                                pil_images[0].save(buf_gif, format='GIF', save_all=True, append_images=pil_images[1:], duration=gif_duration, loop=0)
-                                st.image(buf_gif.getvalue(), caption="Vista Previa GIF")
-                                st.download_button("📥 Descargar GIF", buf_gif.getvalue(), "serie_satelital.gif")
-
-                            # Generación Video MP4
-                            if anim_format in ["Video MP4", "Ambos"]:
-                                try:
-                                    with tempfile.NamedTemporaryFile(suffix='.mp4', delete=False) as tmp_vid:
-                                        # Usamos imageio para escribir el video con codec H.264
-                                        # Calidad 8 es un buen compromiso. Asegúrate de tener imageio-ffmpeg instalado.
-                                        imageio.mimwrite(tmp_vid.name, numpy_frames, fps=video_fps, format='FFMPEG', codec='libx264', quality=8)
-                                        
-                                        with open(tmp_vid.name, 'rb') as f:
-                                            video_bytes = f.read()
-                                            st.video(video_bytes)
-                                            st.download_button("📥 Descargar Video MP4", video_bytes, "serie_satelital.mp4")
-                                except Exception as e:
-                                    st.error(f"Error al generar video. Probablemente falte 'imageio-ffmpeg' en tu requirements.txt. Detalle: {e}")
-                        else:
-                            st.error("No se pudieron generar frames válidos (revisa la cobertura de nubes o la selección del AOI).")
+                                with tempfile.NamedTemporaryFile(suffix='.mp4', delete=False) as tmp_vid:
+                                    imageio.mimwrite(tmp_vid.name, numpy_frames, fps=video_fps, format='FFMPEG', codec='libx264', quality=8)
+                                    with open(tmp_vid.name, 'rb') as f:
+                                        video_bytes = f.read()
+                                        st.video(video_bytes)
+                                        st.download_button("📥 Descargar Video MP4", video_bytes, "serie_satelital.mp4")
+                            except Exception as e:
+                                st.error(f"Error al generar video. Detalle: {e}")
+                    else:
+                        st.error("No se pudieron generar frames válidos.")
 
 st.markdown("---")
 st.caption("Notas: Landsat 1-3 (60m MSS), Landsat 4-9 (30m TM/OLI).")
