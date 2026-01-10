@@ -225,6 +225,20 @@ m = folium.Map(
     attr="Tiles &copy; Esri / OpenTopoMap" if map_style != "OpenStreetMap" else None
 )
 
+# --- DIBUJAR AOI PERSISTENTE ---
+# Si ya existe un AOI guardado, lo dibujamos explícitamente en el mapa base
+if st.session_state['bbox']:
+    b = st.session_state['bbox']
+    # Folium usa [lat, lon] para los límites
+    folium.Rectangle(
+        bounds=[[b[1], b[0]], [b[3], b[2]]],
+        color="#ff7800",
+        fill=True,
+        fill_opacity=0.2,
+        weight=2,
+        tooltip="Área Seleccionada"
+    ).add_to(m)
+
 LocateControl(auto_start=False).add_to(m)
 Draw(draw_options={'polyline':False, 'polygon':False, 'circle':False, 'marker':False, 'circlemarker':False, 'rectangle':True}).add_to(m)
 
@@ -239,12 +253,17 @@ if map_data:
     
     # Persistencia del dibujo (AOI)
     if map_data.get('all_drawings'):
+        # Solo tomamos el último dibujo realizado
         coords = map_data['all_drawings'][-1]['geometry']['coordinates'][0]
         lons, lats = [c[0] for c in coords], [c[1] for c in coords]
-        st.session_state['bbox'] = [min(lons), min(lats), max(lons), max(lats)]
+        new_bbox = [min(lons), min(lats), max(lons), max(lats)]
+        
+        # Si el dibujo es nuevo (diferente al guardado), actualizamos y recargamos para fijarlo
+        if new_bbox != st.session_state['bbox']:
+            st.session_state['bbox'] = new_bbox
+            st.rerun()
 
 # --- LÓGICA DE BÚSQUEDA ---
-# Usamos el bbox de la sesión para que no desaparezca el botón de búsqueda
 if st.session_state['bbox']:
     if st.button(f"🔍 Buscar Imágenes"):
         with st.spinner("Consultando catálogo STAC..."):
@@ -260,13 +279,12 @@ if st.session_state['bbox']:
             if all_items:
                 st.session_state['scenes_before'] = [i for i in all_items if i.datetime < fecha_referencia.replace(tzinfo=i.datetime.tzinfo)]
                 st.session_state['scenes_after'] = [i for i in all_items if i.datetime >= fecha_referencia.replace(tzinfo=i.datetime.tzinfo)]
-                # Al buscar nuevas imágenes, limpiamos la previa anterior
                 st.session_state['preview_img'] = None
                 st.rerun()
             else:
                 st.error("No se encontraron imágenes en el área.")
 
-# --- MOSTRAR RESULTADOS (Independiente del estado actual del mapa) ---
+# --- MOSTRAR RESULTADOS ---
 if 'scenes_before' in st.session_state:
     full_pool = st.session_state['scenes_before'] + st.session_state['scenes_after']
     all_scenes = [s for s in full_pool if s.datetime.strftime('%d/%m/%Y') not in exclude_dates]
@@ -283,13 +301,11 @@ if 'scenes_before' in st.session_state:
             col1, col2 = st.columns(2)
             with col1:
                 if st.button("🖼️ Vista Previa"):
-                    # Generamos la previa y la guardamos en el estado
                     data_prev = stackstac.stack(item, assets=conf["assets"], bounds_latlon=st.session_state['bbox'], epsg=32720, resolution=conf["res"]*2).squeeze().compute()
                     img = normalize_image_robust(np.moveaxis(data_prev.values, 0, -1), percentil_bajo, percentil_alto, conf["scale"], conf["offset"])
                     st.session_state['preview_img'] = img
                     st.session_state['preview_caption'] = f"Previa: {idx_name}"
                 
-                # Mostrar la previa si existe en la sesión
                 if st.session_state['preview_img'] is not None:
                     st.image(st.session_state['preview_img'], use_container_width=True, caption=st.session_state['preview_caption'])
 
@@ -309,7 +325,6 @@ if 'scenes_before' in st.session_state:
                             Image.fromarray(img_8bit).save(buf, format='JPEG', quality=95)
                             st.download_button(f"📷 {fname}.jpg", buf.getvalue(), f"{fname}.jpg")
 
-        # --- LÓGICA DE ANIMACIÓN ---
         if "Animación" in formato_descarga or "Todos" == formato_descarga:
             st.markdown("---")
             if st.button("🎬 Generar Serie Temporal (Video/GIF)"):
