@@ -17,8 +17,8 @@ import io
 import imageio
 
 # --- CONFIGURACIÓN DE PÁGINA ---
-st.set_page_config(page_title="Satellite HD Downloader", layout="wide", page_icon="🛰️")
-st.title("🛰️ Multi-Satellite HD Downloader")
+st.set_page_config(page_title="Satelites LandSat y Sentinel 2", layout="wide", page_icon="🛰️")
+st.title("🛰️ Visualizador y descarga de recortes")
 
 # --- DICCIONARIO DE CONFIGURACIÓN POR SATÉLITE ---
 SAT_CONFIG = {
@@ -130,14 +130,13 @@ def normalize_image_robust(img_arr, p_low=2, p_high=98, scale=1.0, offset=0.0):
         return np.zeros((*img.shape, 3), dtype=np.uint8)
 
 def add_text_to_image(img, text):
-    """Añadir texto a una imagen PIL con tamaño proporcional a la resolución de la imagen."""
+    """Añadir texto a una imagen PIL con tamaño proporcional para asegurar homogeneidad."""
     draw = ImageDraw.Draw(img)
     
-    # Cálculo dinámico basado en el ancho de la imagen para homogeneidad
-    # Usamos aproximadamente el 4% del ancho como tamaño de fuente base
-    font_size = max(14, int(img.width * 0.04))
-    padding = int(font_size * 0.4)
-    margin_bottom = int(font_size * 0.6)
+    # Tamaño de fuente como 5% del ancho de la imagen (ideal para video)
+    font_size = int(img.width * 0.05)
+    padding = int(font_size * 0.3)
+    margin_bottom = int(font_size * 0.5)
 
     try:
         font = ImageFont.truetype("arial.ttf", font_size)
@@ -315,14 +314,24 @@ if bbox:
                             try:
                                 date_str = s.datetime.strftime('%d/%m/%Y')
                                 status.update(label=f"Analizando frame {processed + 1}: {date_str}...")
-                                # Generamos el frame a resolución visual (x2 la nativa para fluidez)
+                                # Generamos el frame a resolución visual
                                 data_f = stackstac.stack(s, assets=conf["assets"], bounds_latlon=bbox, epsg=epsg_code, resolution=conf["res"]*2).squeeze().compute()
                                 check_np = data_f.sel(band=conf["assets"][0]).values
                                 if np.mean(np.isnan(check_np) | (check_np <= 0)) > 0.20: continue
                                 img_np = np.moveaxis(data_f.sel(band=conf["assets"][:3]).values, 0, -1)
                                 img_8bit = normalize_image_robust(img_np, percentil_bajo, percentil_alto, conf["scale"], conf["offset"])
-                                # Añadimos el texto adaptativo
-                                frames_list.append((s.datetime, add_text_to_image(Image.fromarray(img_8bit), date_str)))
+                                
+                                pil_img = Image.fromarray(img_8bit)
+                                
+                                # --- PASO CRUCIAL PARA LA HOMOGENEIDAD ---
+                                # Redimensionamos todas las imágenes a un ancho estándar (ej: 1000px)
+                                # Esto asegura que la leyenda se vea del mismo tamaño sin importar el satélite
+                                target_w = 1000
+                                h_resize = int(pil_img.height * (target_w / pil_img.width))
+                                pil_img = pil_img.resize((target_w, h_resize), Image.Resampling.LANCZOS)
+                                
+                                # Añadimos el texto sobre la imagen estandarizada
+                                frames_list.append((s.datetime, add_text_to_image(pil_img, date_str)))
                                 processed += 1
                             except: continue
                         
