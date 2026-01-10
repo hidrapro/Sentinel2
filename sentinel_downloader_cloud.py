@@ -106,6 +106,10 @@ if 'preview_img' not in st.session_state:
     st.session_state['preview_img'] = None
 if 'preview_caption' not in st.session_state:
     st.session_state['preview_caption'] = ""
+if 'anim_gif' not in st.session_state:
+    st.session_state['anim_gif'] = None
+if 'anim_vid' not in st.session_state:
+    st.session_state['anim_vid'] = None
 
 # --- SIDEBAR: CONFIGURACIÓN ---
 with st.sidebar:
@@ -226,10 +230,8 @@ m = folium.Map(
 )
 
 # --- DIBUJAR AOI PERSISTENTE ---
-# Si ya existe un AOI guardado, lo dibujamos explícitamente en el mapa base
 if st.session_state['bbox']:
     b = st.session_state['bbox']
-    # Folium usa [lat, lon] para los límites
     folium.Rectangle(
         bounds=[[b[1], b[0]], [b[3], b[2]]],
         color="#ff7800",
@@ -244,21 +246,17 @@ Draw(draw_options={'polyline':False, 'polygon':False, 'circle':False, 'marker':F
 
 map_data = st_folium(m, width=1200, height=400, key="main_map")
 
-# Persistencia de posición y zoom
 if map_data:
     if map_data.get('center'):
         st.session_state['map_center'] = [map_data['center']['lat'], map_data['center']['lng']]
     if map_data.get('zoom'):
         st.session_state['map_zoom'] = map_data['zoom']
     
-    # Persistencia del dibujo (AOI)
     if map_data.get('all_drawings'):
-        # Solo tomamos el último dibujo realizado
         coords = map_data['all_drawings'][-1]['geometry']['coordinates'][0]
         lons, lats = [c[0] for c in coords], [c[1] for c in coords]
         new_bbox = [min(lons), min(lats), max(lons), max(lats)]
         
-        # Si el dibujo es nuevo (diferente al guardado), actualizamos y recargamos para fijarlo
         if new_bbox != st.session_state['bbox']:
             st.session_state['bbox'] = new_bbox
             st.rerun()
@@ -280,6 +278,8 @@ if st.session_state['bbox']:
                 st.session_state['scenes_before'] = [i for i in all_items if i.datetime < fecha_referencia.replace(tzinfo=i.datetime.tzinfo)]
                 st.session_state['scenes_after'] = [i for i in all_items if i.datetime >= fecha_referencia.replace(tzinfo=i.datetime.tzinfo)]
                 st.session_state['preview_img'] = None
+                st.session_state['anim_gif'] = None
+                st.session_state['anim_vid'] = None
                 st.rerun()
             else:
                 st.error("No se encontraron imágenes en el área.")
@@ -325,13 +325,14 @@ if 'scenes_before' in st.session_state:
                             Image.fromarray(img_8bit).save(buf, format='JPEG', quality=95)
                             st.download_button(f"📷 {fname}.jpg", buf.getvalue(), f"{fname}.jpg")
 
+        # --- LÓGICA DE ANIMACIÓN (Mejorada para visualización automática) ---
         if "Animación" in formato_descarga or "Todos" == formato_descarga:
             st.markdown("---")
             if st.button("🎬 Generar Serie Temporal (Video/GIF)"):
                 frames_list = []
                 pool = sorted(all_scenes, key=lambda x: (abs((x.datetime.replace(tzinfo=None) - fecha_referencia).days), x.properties[conf['cloud_key']]))
                 
-                with st.status("Procesando frames...") as status:
+                with st.status("Procesando frames...", state="running") as status:
                     processed_count = 0
                     for s in pool:
                         if processed_count >= gif_max_images: break
@@ -342,8 +343,7 @@ if 'scenes_before' in st.session_state:
                             img_np = np.moveaxis(data_f.values, 0, -1)
                             
                             nodata_mask = np.any(np.isnan(img_np) | (img_np <= 0), axis=-1)
-                            if np.mean(nodata_mask) > 0.25:
-                                continue
+                            if np.mean(nodata_mask) > 0.25: continue
                             
                             img_8bit = normalize_image_robust(img_np, percentil_bajo, percentil_alto, conf["scale"], conf["offset"])
                             frames_list.append((s.datetime, add_text_to_image(Image.fromarray(img_8bit), date_str)))
@@ -355,24 +355,34 @@ if 'scenes_before' in st.session_state:
                         pil_images = [f[1] for f in frames_list]
                         numpy_frames = [np.array(img) for img in pil_images]
 
+                        # Generar GIF
                         if anim_format in ["GIF Animado", "Ambos"]:
                             buf_gif = io.BytesIO()
                             pil_images[0].save(buf_gif, format='GIF', save_all=True, append_images=pil_images[1:], duration=gif_duration, loop=0)
-                            st.image(buf_gif.getvalue(), caption="Vista Previa GIF")
-                            st.download_button("📥 Descargar GIF", buf_gif.getvalue(), "serie_satelital.gif")
+                            st.session_state['anim_gif'] = buf_gif.getvalue()
 
+                        # Generar Video
                         if anim_format in ["Video MP4", "Ambos"]:
                             try:
                                 with tempfile.NamedTemporaryFile(suffix='.mp4', delete=False) as tmp_vid:
                                     imageio.mimwrite(tmp_vid.name, numpy_frames, fps=video_fps, format='FFMPEG', codec='libx264', quality=8)
                                     with open(tmp_vid.name, 'rb') as f:
-                                        video_bytes = f.read()
-                                        st.video(video_bytes)
-                                        st.download_button("📥 Descargar Video MP4", video_bytes, "serie_satelital.mp4")
+                                        st.session_state['anim_vid'] = f.read()
                             except Exception as e:
-                                st.error(f"Error al generar video. Detalle: {e}")
+                                st.error(f"Error en video: {e}")
+                        
+                        status.update(label="✅ Serie temporal lista", state="complete")
                     else:
                         st.error("No se pudieron generar frames válidos.")
+
+            # --- RENDERIZADO AUTOMÁTICO FUERA DEL STATUS ---
+            if st.session_state['anim_gif'] is not None:
+                st.image(st.session_state['anim_gif'], caption="Serie Temporal Generada (GIF)")
+                st.download_button("📥 Descargar GIF Animado", st.session_state['anim_gif'], "serie_satelital.gif")
+
+            if st.session_state['anim_vid'] is not None:
+                st.video(st.session_state['anim_vid'])
+                st.download_button("📥 Descargar Video MP4", st.session_state['anim_vid'], "serie_satelital.mp4")
 
 st.markdown("---")
 st.caption("Notas: Landsat 1-3 (60m MSS), Landsat 4-9 (30m TM/OLI).")
