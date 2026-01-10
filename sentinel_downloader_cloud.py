@@ -1,4 +1,4 @@
-import streamlit as st
+mport streamlit as st
 import os
 import pystac_client
 import planetary_computer
@@ -18,7 +18,7 @@ import imageio
 
 # --- CONFIGURACIÓN DE PÁGINA ---
 st.set_page_config(page_title="Satelites LandSat y Sentinel 2", layout="wide", page_icon="🛰️")
-st.title("🛰️ Visualizador Imagenes LandSat y Sentinel 2, descarga de recortes y video con series de tiempo")
+st.title("🛰️ Visualizador y descarga de recortes")
 
 # --- DICCIONARIO DE CONFIGURACIÓN POR SATÉLITE ---
 SAT_CONFIG = {
@@ -130,17 +130,29 @@ def normalize_image_robust(img_arr, p_low=2, p_high=98, scale=1.0, offset=0.0):
         return np.zeros((*img.shape, 3), dtype=np.uint8)
 
 def add_text_to_image(img, text):
-    """Añadir texto a una imagen PIL con tamaño duplicado para máxima visibilidad."""
+    """Añadir texto a una imagen PIL con tamaño masivo y búsqueda de fuentes del sistema."""
     draw = ImageDraw.Draw(img)
     
-    # Tamaño de fuente aumentado al 10% del ancho de la imagen (el doble que antes)
-    font_size = int(img.width * 0.10)
-    padding = int(font_size * 0.25)
-    margin_bottom = int(font_size * 0.4)
-
-    try:
-        font = ImageFont.truetype("arial.ttf", font_size)
-    except:
+    # Aumentado al 15% del ancho de la imagen para que sea masivo
+    font_size = int(img.width * 0.15)
+    
+    font = None
+    # Rutas comunes de fuentes en Linux/Streamlit Cloud para asegurar que sea escalable
+    font_paths = [
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+        "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
+        "/usr/share/fonts/truetype/freefont/FreeSansBold.ttf",
+        "arial.ttf"
+    ]
+    
+    for path in font_paths:
+        try:
+            font = ImageFont.truetype(path, font_size)
+            break
+        except:
+            continue
+            
+    if font is None:
         font = ImageFont.load_default()
     
     # Obtener dimensiones del texto
@@ -148,19 +160,28 @@ def add_text_to_image(img, text):
     tw = bbox[2] - bbox[0]
     th = bbox[3] - bbox[1]
     
+    # Padding y márgenes proporcionales al nuevo tamaño de fuente
+    padding = int(font_size * 0.2)
+    margin_bottom = int(font_size * 0.3)
+    
     # Posición central inferior
     x_pos = (img.width - tw) // 2
     y_pos = img.height - th - margin_bottom
     
-    # Dibujar fondo (rectángulo) con opacidad para contraste
+    # Dibujar fondo (rectángulo)
     draw.rectangle(
         [(x_pos - padding, y_pos - padding), 
          (x_pos + tw + padding, y_pos + th + padding)], 
-        fill=(0, 0, 0, 160)
+        fill=(0, 0, 0, 180)
     )
     
-    # Dibujar texto
+    # Dibujar texto (si es la fuente default, la dibujamos 2 veces para que se vea más gruesa)
     draw.text((x_pos, y_pos), text, fill=(255, 255, 255), font=font)
+    if font_size > 20 and font == ImageFont.load_default():
+        # Efecto de grosor para la fuente diminuta por defecto
+        draw.text((x_pos+1, y_pos), text, fill=(255, 255, 255), font=font)
+        draw.text((x_pos, y_pos+1), text, fill=(255, 255, 255), font=font)
+
     return img
 
 # --- SIDEBAR: CONFIGURACIÓN ---
@@ -325,7 +346,6 @@ if bbox:
                                 
                                 # --- PASO CRUCIAL PARA LA HOMOGENEIDAD ---
                                 # Redimensionamos todas las imágenes a un ancho estándar (1000px)
-                                # Esto asegura que la leyenda se vea igual sin importar el satélite
                                 target_w = 1000
                                 h_resize = int(pil_img.height * (target_w / pil_img.width))
                                 pil_img = pil_img.resize((target_w, h_resize), Image.Resampling.LANCZOS)
