@@ -14,7 +14,6 @@ import tempfile
 from PIL import Image, ImageDraw, ImageFont
 import io
 import imageio
-import time
 
 # --- CONFIGURACIÓN DE PÁGINA ---
 st.set_page_config(page_title="Satellite HD Downloader", layout="wide", page_icon="🛰️")
@@ -305,26 +304,15 @@ if st.session_state['bbox']:
                     
                     fecha_inicio, fecha_fin = fecha_referencia - timedelta(days=365), fecha_referencia + timedelta(days=365)
                     
-                    # --- SISTEMA DE REINTENTOS PARA EVITAR APIERROR POR LATENCIA ---
-                    max_retries = 3
-                    items_found = []
-                    for attempt in range(max_retries):
-                        try:
-                            search = catalog.search(
-                                collections=[conf["collection"]],
-                                bbox=bbox,
-                                datetime=f"{fecha_inicio.isoformat()}/{fecha_fin.isoformat()}",
-                                query=query_params,
-                                max_items=100
-                            )
-                            items_found = list(search.items())
-                            break # Éxito
-                        except Exception as e:
-                            if attempt < max_retries - 1:
-                                time.sleep(2 ** attempt) # Espera exponencial
-                                continue
-                            else:
-                                raise e # Re-lanzar error si fallan todos los intentos
+                    # Búsqueda directa (un solo intento)
+                    search = catalog.search(
+                        collections=[conf["collection"]],
+                        bbox=bbox,
+                        datetime=f"{fecha_inicio.isoformat()}/{fecha_fin.isoformat()}",
+                        query=query_params,
+                        max_items=100
+                    )
+                    items_found = list(search.items())
 
                     if items_found:
                         st.session_state['scenes_before'] = [i for i in items_found if i.datetime < fecha_referencia.replace(tzinfo=i.datetime.tzinfo)]
@@ -337,7 +325,7 @@ if st.session_state['bbox']:
                         st.error("No se encontraron imágenes en el área.")
                 
                 except pystac_client.exceptions.APIError as api_err:
-                    st.error("Error de conexión con Planetary Computer. Esto suele ser un problema temporal de red o saturación del servidor. Por favor, intenta de nuevo en unos segundos.")
+                    st.error("Error de conexión con Planetary Computer. Por favor, intenta de nuevo en unos segundos.")
                     st.info(f"Detalle técnico: {str(api_err)}")
                 except Exception as e:
                     st.error(f"Error inesperado: {str(e)}")
