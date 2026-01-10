@@ -96,6 +96,21 @@ SAT_CONFIG = {
 }
 
 # --- FUNCIONES AUXILIARES ---
+def get_utm_epsg(lon, lat):
+    """Calcula el código EPSG de la zona UTM correcta según coordenadas."""
+    # Calcular zona UTM
+    utm_zone = int((lon + 180) / 6) + 1
+    
+    # Determinar hemisferio y código EPSG
+    if lat >= 0:
+        # Hemisferio Norte: 326XX
+        epsg_code = 32600 + utm_zone
+    else:
+        # Hemisferio Sur: 327XX
+        epsg_code = 32700 + utm_zone
+    
+    return epsg_code
+
 def normalize_image_robust(img_arr, p_low=2, p_high=98, scale=1.0, offset=0.0):
     """Normalización robusta de imagen con percentiles."""
     img = img_arr * scale + offset
@@ -190,10 +205,16 @@ Draw(draw_options={'polyline':False, 'polygon':False, 'circle':False, 'marker':F
 map_data = st_folium(m, width=1200, height=400, key="main_map")
 
 bbox = None
+epsg_code = None
 if map_data and map_data.get('all_drawings'):
     coords = map_data['all_drawings'][-1]['geometry']['coordinates'][0]
     lons, lats = [c[0] for c in coords], [c[1] for c in coords]
     bbox = [min(lons), min(lats), max(lons), max(lats)]
+    # Calcular centro del bbox para determinar zona UTM
+    center_lon = (min(lons) + max(lons)) / 2
+    center_lat = (min(lats) + max(lats)) / 2
+    epsg_code = get_utm_epsg(center_lon, center_lat)
+    st.info(f"📍 Zona UTM detectada: EPSG:{epsg_code}")
 
 # --- LÓGICA DE BÚSQUEDA ---
 if bbox:
@@ -234,18 +255,16 @@ if bbox:
                     st.write(f"**Elevación Solar:** {item.properties.get('view:sun_elevation', 'N/A')}°")
                     st.write(f"**Cobertura de Nubes:** {item.properties.get(conf['cloud_key'], 0):.2f}%")
 
-                col1, col2 = st.columns(2)
                 with col1:
                     if st.button("🖼️ Vista Previa"):
-                        data_raw = stackstac.stack(item, assets=conf["assets"], bounds_latlon=bbox, epsg=32720, resolution=conf["res"]*2).squeeze().compute()
+                        data_raw = stackstac.stack(item, assets=conf["assets"], bounds_latlon=bbox, epsg=epsg_code, resolution=conf["res"]*2).squeeze().compute()
                         img_np = np.moveaxis(data_raw.sel(band=conf["assets"][:3]).values, 0, -1)
                         img = normalize_image_robust(img_np, percentil_bajo, percentil_alto, conf["scale"], conf["offset"])
                         st.image(img, use_container_width=True, caption=f"Composición RGB: {idx_name}")
-                        
                 with col2:
                     if st.button("🚀 Descargar HD"):
                         with st.status("Procesando datos HD..."):
-                            data_raw = stackstac.stack(item, assets=conf["assets"], bounds_latlon=bbox, epsg=32720, resolution=res_final).squeeze()
+                            data_raw = stackstac.stack(item, assets=conf["assets"], bounds_latlon=bbox, epsg=epsg_code, resolution=res_final).squeeze()
                             data_final = data_raw.sel(band=conf["assets"][:3])
                             fname = f"{sat_choice.replace(' ', '_')}_{item.datetime.strftime('%Y%m%d')}_RGB"
                             
@@ -276,7 +295,7 @@ if bbox:
                             try:
                                 date_str = s.datetime.strftime('%d/%m/%Y')
                                 status.update(label=f"Analizando frame {processed + 1}: {date_str}...")
-                                data_f = stackstac.stack(s, assets=conf["assets"], bounds_latlon=bbox, epsg=32720, resolution=conf["res"]*2).squeeze().compute()
+                                data_f = stackstac.stack(s, assets=conf["assets"], bounds_latlon=bbox, epsg=epsg_code, resolution=conf["res"]*2).squeeze().compute()
                                 check_np = data_f.sel(band=conf["assets"][0]).values
                                 if np.mean(np.isnan(check_np) | (check_np <= 0)) > 0.20: continue
                                 img_np = np.moveaxis(data_f.sel(band=conf["assets"][:3]).values, 0, -1)
