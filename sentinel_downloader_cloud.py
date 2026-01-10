@@ -1,4 +1,4 @@
-mport streamlit as st
+import streamlit as st
 import os
 import pystac_client
 import planetary_computer
