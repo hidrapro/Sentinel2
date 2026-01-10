@@ -242,8 +242,7 @@ tile_urls = {
     "Topográfico (OpenTopo)": "https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png"
 }
 
-# Solo forzamos el re-centrado si el estilo del mapa cambió.
-# Si el mapa es el mismo, dejamos que el componente mantenga su propia navegación interna.
+# Inicialización del objeto Mapa
 m = folium.Map(
     location=st.session_state['map_center'], 
     zoom_start=st.session_state['map_zoom'], 
@@ -251,6 +250,7 @@ m = folium.Map(
     attr="Tiles &copy; Esri / OpenTopoMap" if map_style != "OpenStreetMap" else None
 )
 
+# Dibujar el AOI persistente si existe
 if st.session_state['bbox']:
     b = st.session_state['bbox']
     folium.Rectangle(
@@ -258,13 +258,22 @@ if st.session_state['bbox']:
         color="#ff7800",
         fill=True,
         fill_opacity=0.2,
-        weight=2
+        weight=2,
+        tooltip="AOI Guardado"
     ).add_to(m)
 
 LocateControl(auto_start=False).add_to(m)
-Draw(draw_options={'polyline':False, 'polygon':False, 'circle':False, 'marker':False, 'circlemarker':False, 'rectangle':True}).add_to(m)
+# Configuración del control de dibujo: limitamos a un solo rectángulo a la vez
+Draw(
+    export=False,
+    position='topleft',
+    draw_options={
+        'polyline': False, 'polygon': False, 'circle': False, 
+        'marker': False, 'circlemarker': False, 'rectangle': True
+    }
+).add_to(m)
 
-# El truco para evitar el rebote es usar una clave estable y no forzar coordenadas en cada ejecución.
+# Renderizado del mapa
 map_data = st_folium(
     m, 
     width=1200, 
@@ -275,25 +284,31 @@ map_data = st_folium(
 
 # --- PROCESAMIENTO DE DATOS DEL MAPA ---
 if map_data:
-    # Captura del centro y zoom para persistencia
+    # Sincronización de posición y zoom (sin forzar rerun manual)
     if map_data.get('center'):
         st.session_state['map_center'] = [map_data['center']['lat'], map_data['center']['lng']]
     if map_data.get('zoom'):
         st.session_state['map_zoom'] = map_data['zoom']
     
-    # Manejo del dibujo (AOI)
-    drawing = map_data.get('last_active_drawing')
-    if drawing and drawing.get('geometry'):
-        coords = drawing['geometry']['coordinates'][0]
-        lons = [wrap_longitude(c[0]) for c in coords]
-        lats = [c[1] for c in coords]
-        new_bbox = [min(lons), min(lats), max(lons), max(lats)]
-        
-        if st.session_state['bbox'] != new_bbox:
-            st.session_state['bbox'] = new_bbox
-            st.rerun()
+    # Detección de dibujo: Usamos all_drawings para capturar el estado final
+    drawings = map_data.get('all_drawings', [])
+    if drawings:
+        # Tomamos el último rectángulo dibujado
+        last_drawing = drawings[-1]
+        if last_drawing.get('geometry'):
+            coords = last_drawing['geometry']['coordinates'][0]
+            lons = [wrap_longitude(c[0]) for c in coords]
+            lats = [c[1] for c in coords]
+            new_bbox = [min(lons), min(lats), max(lons), max(lats)]
+            
+            # Solo actualizamos si el bbox realmente cambió
+            if st.session_state['bbox'] != new_bbox:
+                st.session_state['bbox'] = new_bbox
+                # Aquí el rerun es necesario para que el folium.Rectangle del servidor 
+                # reemplace visualmente al dibujo temporal del cliente
+                st.rerun()
 
-# Si cambiamos el estilo del mapa en la barra lateral, guardamos y forzamos refresco
+# Sincronización de estilo de mapa
 if map_style != st.session_state['last_map_style']:
     st.session_state['last_map_style'] = map_style
     st.rerun()
@@ -303,7 +318,7 @@ if st.session_state['bbox']:
     if st.button(f"🔍 Buscar Imágenes"):
         bbox = st.session_state['bbox']
         if abs(bbox[2] - bbox[0]) < 1e-6 or abs(bbox[3] - bbox[1]) < 1e-6:
-            st.error("Área inválida.")
+            st.error("El área seleccionada es inválida.")
         else:
             with st.spinner("Consultando catálogo STAC..."):
                 try:
@@ -333,10 +348,10 @@ if st.session_state['bbox']:
                         st.session_state['anim_vid'] = None
                         st.rerun()
                     else:
-                        st.error("No se encontraron imágenes.")
+                        st.error("No se encontraron imágenes en el área.")
                 
                 except pystac_client.exceptions.APIError as api_err:
-                    st.error("Error de API: Verifica el área o intenta de nuevo.")
+                    st.error("Error de conexión con el catálogo satelital.")
                     st.info(f"Detalle técnico: {str(api_err)}")
                 except Exception as e:
                     st.error(f"Error inesperado: {str(e)}")
@@ -348,7 +363,7 @@ if 'scenes_before' in st.session_state:
     all_scenes.sort(key=lambda x: x.datetime)
     
     if not all_scenes:
-        st.warning("No hay escenas.")
+        st.warning("No hay escenas disponibles después del filtrado.")
     else:
         dynamic_epsg = get_utm_epsg(st.session_state['bbox'])
 
@@ -437,10 +452,10 @@ if 'scenes_before' in st.session_state:
                         
                         status.update(label="✅ Serie temporal lista", state="complete")
                     else:
-                        st.error("No se pudieron generar frames.")
+                        st.error("No se pudieron generar frames válidos.")
 
             if st.session_state['anim_gif'] is not None:
-                st.image(st.session_state['anim_gif'], caption="GIF")
+                st.image(st.session_state['anim_gif'], caption="Serie Temporal (GIF)")
                 st.download_button("📥 Descargar GIF", st.session_state['anim_gif'], "serie.gif")
 
             if st.session_state['anim_vid'] is not None:
