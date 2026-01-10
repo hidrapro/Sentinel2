@@ -170,7 +170,7 @@ with st.sidebar:
         st.subheader("🎞️ Ajustes de Animación")
         anim_format = st.selectbox("Formato de salida", ["GIF Animado", "Video MP4", "Ambos"])
         gif_duration = st.slider("ms por frame (solo GIF)", 100, 2000, 500)
-        video_fps = st.slider("Frames por segundo (solo Video)", 1, 30, 2)
+        video_fps = st.slider("Frames por segundo (solo Video)", 1, 5, 2)
         gif_max_images = st.slider("Cantidad de imágenes objetivo", 3, 50, 15)
 
 # --- PROCESAMIENTO ---
@@ -325,7 +325,7 @@ if 'scenes_before' in st.session_state:
                             Image.fromarray(img_8bit).save(buf, format='JPEG', quality=95)
                             st.download_button(f"📷 {fname}.jpg", buf.getvalue(), f"{fname}.jpg")
 
-        # --- LÓGICA DE ANIMACIÓN (Mejorada para visualización automática) ---
+        # --- LÓGICA DE ANIMACIÓN ---
         if "Animación" in formato_descarga or "Todos" == formato_descarga:
             st.markdown("---")
             if st.button("🎬 Generar Serie Temporal (Video/GIF)"):
@@ -375,7 +375,7 @@ if 'scenes_before' in st.session_state:
                     else:
                         st.error("No se pudieron generar frames válidos.")
 
-            # --- RENDERIZADO AUTOMÁTICO FUERA DEL STATUS ---
+            # --- RENDERIZADO AUTOMÁTICO ---
             if st.session_state['anim_gif'] is not None:
                 st.image(st.session_state['anim_gif'], caption="Serie Temporal Generada (GIF)")
                 st.download_button("📥 Descargar GIF Animado", st.session_state['anim_gif'], "serie_satelital.gif")
