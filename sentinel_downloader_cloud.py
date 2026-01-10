@@ -18,7 +18,7 @@ import imageio
 
 # --- CONFIGURACIÓN DE PÁGINA ---
 st.set_page_config(page_title="Satelites LandSat y Sentinel 2", layout="wide", page_icon="🛰️")
-st.title("🛰️ Visualizador y descarga de recortes")
+st.title("🛰️ Visualizador Imagenes LandSat y Sentinel 2")
 
 # --- DICCIONARIO DE CONFIGURACIÓN POR SATÉLITE ---
 SAT_CONFIG = {
