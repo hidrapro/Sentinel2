@@ -14,6 +14,7 @@ import tempfile
 from PIL import Image, ImageDraw, ImageFont
 import io
 import imageio
+import time
 
 # --- CONFIGURACIÓN DE PÁGINA ---
 st.set_page_config(page_title="Satellite HD Downloader", layout="wide", page_icon="🛰️")
@@ -94,6 +95,16 @@ SAT_CONFIG = {
         "max_year": 1983
     }
 }
+
+# --- FUNCIONES DE SOPORTE GEOGRÁFICO ---
+def get_utm_epsg(bbox):
+    """Calcula automáticamente el EPSG de la zona UTM correspondiente al área."""
+    if not bbox: return 3857 # Fallback a Web Mercator si no hay área
+    lon = (bbox[0] + bbox[2]) / 2
+    lat = (bbox[1] + bbox[3]) / 2
+    utm_zone = int((lon + 180) / 6) + 1
+    epsg_base = 32600 if lat >= 0 else 32700
+    return epsg_base + utm_zone
 
 # --- ESTADO INICIAL Y PERSISTENCIA ---
 if 'map_center' not in st.session_state:
@@ -212,7 +223,7 @@ def add_text_to_image(img_pil, text):
     bb = draw.textbbox((0, 0), text, font=font)
     tw, th = bb[2]-bb[0], bb[3]-bb[1]
     m = fs // 3 
-    x, y = (w - tw) // 2, h - th - m * 3
+    x, y = (w - tw) // 2, h - th - m * 2
     
     draw.rectangle([x-m, y-m, x+tw+m, y+th+m], fill=(0,0,0,160))
     draw.text((x, y), text, fill=(255,255,255), font=font)
@@ -226,7 +237,6 @@ tile_urls = {
     "Topográfico (OpenTopo)": "https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png"
 }
 
-# Se crea el mapa usando los valores de la sesión
 m = folium.Map(
     location=st.session_state['map_center'], 
     zoom_start=st.session_state['map_zoom'], 
@@ -234,7 +244,6 @@ m = folium.Map(
     attr="Tiles &copy; Esri / OpenTopoMap" if map_style != "OpenStreetMap" else None
 )
 
-# Dibujar AOI persistente
 if st.session_state['bbox']:
     b = st.session_state['bbox']
     folium.Rectangle(
@@ -249,7 +258,6 @@ if st.session_state['bbox']:
 LocateControl(auto_start=False).add_to(m)
 Draw(draw_options={'polyline':False, 'polygon':False, 'circle':False, 'marker':False, 'circlemarker':False, 'rectangle':True}).add_to(m)
 
-# st_folium con clave estática para evitar reconstrucciones innecesarias
 map_data = st_folium(
     m, 
     width=1200, 
@@ -257,13 +265,10 @@ map_data = st_folium(
     key="main_map"
 )
 
-# --- SINCRONIZACIÓN DE ESTADO ESTABILIZADA ---
 if map_data:
-    # Captura de centro con redondeo para evitar jitter y rebotes
     if map_data.get('center'):
         new_lat = round(map_data['center']['lat'], 4)
         new_lng = round(map_data['center']['lng'], 4)
-        # Solo actualizamos si el cambio es real (evitamos micro-movimientos de punto flotante)
         if abs(new_lat - st.session_state['map_center'][0]) > 0.001 or \
            abs(new_lng - st.session_state['map_center'][1]) > 0.001:
             st.session_state['map_center'] = [new_lat, new_lng]
@@ -272,7 +277,6 @@ if map_data:
         if map_data['zoom'] != st.session_state['map_zoom']:
             st.session_state['map_zoom'] = map_data['zoom']
     
-    # Captura de AOI sin forzar rerun (el usuario ya ve lo que dibujó)
     if map_data.get('all_drawings') and len(map_data['all_drawings']) > 0:
         drawing = map_data['all_drawings'][-1]
         if drawing.get('geometry'):
@@ -281,30 +285,62 @@ if map_data:
             new_bbox = [min(lons), min(lats), max(lons), max(lats)]
             if st.session_state['bbox'] != new_bbox:
                 st.session_state['bbox'] = new_bbox
-                # Aquí no hacemos rerun para que no "salte" mientras el usuario opera el mapa
 
 # --- LÓGICA DE BÚSQUEDA ---
 if st.session_state['bbox']:
     if st.button(f"🔍 Buscar Imágenes"):
-        with st.spinner("Consultando catálogo STAC..."):
-            catalog = pystac_client.Client.open("https://planetarycomputer.microsoft.com/api/stac/v1", modifier=planetary_computer.sign_inplace)
-            query_params = {conf["cloud_key"]: {"lt": max_cloud}}
-            if conf["platform"]: query_params["platform"] = {"in": conf["platform"]}
-            common_args = {"collections": [conf["collection"]], "bbox": st.session_state['bbox'], "query": query_params}
-            
-            fecha_inicio, fecha_fin = fecha_referencia - timedelta(days=365), fecha_referencia + timedelta(days=365)
-            search = catalog.search(**common_args, datetime=f"{fecha_inicio.isoformat()}/{fecha_fin.isoformat()}", max_items=100)
-            
-            all_items = list(search.items())
-            if all_items:
-                st.session_state['scenes_before'] = [i for i in all_items if i.datetime < fecha_referencia.replace(tzinfo=i.datetime.tzinfo)]
-                st.session_state['scenes_after'] = [i for i in all_items if i.datetime >= fecha_referencia.replace(tzinfo=i.datetime.tzinfo)]
-                st.session_state['preview_img'] = None
-                st.session_state['anim_gif'] = None
-                st.session_state['anim_vid'] = None
-                st.rerun()
-            else:
-                st.error("No se encontraron imágenes en el área.")
+        # Verificación de AOI válido
+        bbox = st.session_state['bbox']
+        if abs(bbox[2] - bbox[0]) < 1e-6 or abs(bbox[3] - bbox[1]) < 1e-6:
+            st.error("El área seleccionada es inválida o demasiado pequeña.")
+        else:
+            with st.spinner("Consultando catálogo STAC..."):
+                try:
+                    catalog = pystac_client.Client.open(
+                        "https://planetarycomputer.microsoft.com/api/stac/v1", 
+                        modifier=planetary_computer.sign_inplace
+                    )
+                    query_params = {conf["cloud_key"]: {"lt": max_cloud}}
+                    if conf["platform"]: query_params["platform"] = {"in": conf["platform"]}
+                    
+                    fecha_inicio, fecha_fin = fecha_referencia - timedelta(days=365), fecha_referencia + timedelta(days=365)
+                    
+                    # --- SISTEMA DE REINTENTOS PARA EVITAR APIERROR POR LATENCIA ---
+                    max_retries = 3
+                    items_found = []
+                    for attempt in range(max_retries):
+                        try:
+                            search = catalog.search(
+                                collections=[conf["collection"]],
+                                bbox=bbox,
+                                datetime=f"{fecha_inicio.isoformat()}/{fecha_fin.isoformat()}",
+                                query=query_params,
+                                max_items=100
+                            )
+                            items_found = list(search.items())
+                            break # Éxito
+                        except Exception as e:
+                            if attempt < max_retries - 1:
+                                time.sleep(2 ** attempt) # Espera exponencial
+                                continue
+                            else:
+                                raise e # Re-lanzar error si fallan todos los intentos
+
+                    if items_found:
+                        st.session_state['scenes_before'] = [i for i in items_found if i.datetime < fecha_referencia.replace(tzinfo=i.datetime.tzinfo)]
+                        st.session_state['scenes_after'] = [i for i in items_found if i.datetime >= fecha_referencia.replace(tzinfo=i.datetime.tzinfo)]
+                        st.session_state['preview_img'] = None
+                        st.session_state['anim_gif'] = None
+                        st.session_state['anim_vid'] = None
+                        st.rerun()
+                    else:
+                        st.error("No se encontraron imágenes en el área.")
+                
+                except pystac_client.exceptions.APIError as api_err:
+                    st.error("Error de conexión con Planetary Computer. Esto suele ser un problema temporal de red o saturación del servidor. Por favor, intenta de nuevo en unos segundos.")
+                    st.info(f"Detalle técnico: {str(api_err)}")
+                except Exception as e:
+                    st.error(f"Error inesperado: {str(e)}")
 
 # --- MOSTRAR RESULTADOS ---
 if 'scenes_before' in st.session_state:
@@ -315,6 +351,9 @@ if 'scenes_before' in st.session_state:
     if not all_scenes:
         st.warning("No hay escenas disponibles (revisa el filtro de exclusión).")
     else:
+        # Calcular EPSG dinámico para esta zona del mundo
+        dynamic_epsg = get_utm_epsg(st.session_state['bbox'])
+
         if "Animación" not in formato_descarga and "Todos" != formato_descarga:
             scene_opts = {f"{s.datetime.strftime('%d/%m/%Y')} | Nubes: {s.properties[conf['cloud_key']]:.1f}%": i for i, s in enumerate(all_scenes)}
             idx_name = st.selectbox("Seleccionar imagen específica:", list(scene_opts.keys()))
@@ -323,7 +362,7 @@ if 'scenes_before' in st.session_state:
             col1, col2 = st.columns(2)
             with col1:
                 if st.button("🖼️ Vista Previa"):
-                    data_prev = stackstac.stack(item, assets=conf["assets"], bounds_latlon=st.session_state['bbox'], epsg=32720, resolution=conf["res"]*2).squeeze().compute()
+                    data_prev = stackstac.stack(item, assets=conf["assets"], bounds_latlon=st.session_state['bbox'], epsg=dynamic_epsg, resolution=conf["res"]*2).squeeze().compute()
                     img = normalize_image_robust(np.moveaxis(data_prev.values, 0, -1), percentil_bajo, percentil_alto, conf["scale"], conf["offset"])
                     st.session_state['preview_img'] = img
                     st.session_state['preview_caption'] = f"Previa: {idx_name}"
@@ -334,7 +373,7 @@ if 'scenes_before' in st.session_state:
             with col2:
                 if st.button("🚀 Descargar HD"):
                     with st.status("Procesando datos HD..."):
-                        data = stackstac.stack(item, assets=conf["assets"], bounds_latlon=st.session_state['bbox'], epsg=32720, resolution=res_final).squeeze()
+                        data = stackstac.stack(item, assets=conf["assets"], bounds_latlon=st.session_state['bbox'], epsg=dynamic_epsg, resolution=res_final).squeeze()
                         fname = f"{sat_choice.replace(' ', '_')}_{item.datetime.strftime('%Y%m%d')}"
                         if "GeoTIFF" in formato_descarga or "Todos" == formato_descarga:
                             with tempfile.NamedTemporaryFile(suffix='.tif', delete=False) as tmp:
@@ -360,7 +399,7 @@ if 'scenes_before' in st.session_state:
                         try:
                             date_str = s.datetime.strftime('%d/%m/%Y')
                             status.update(label=f"Procesando frame {processed_count + 1}: {date_str}...")
-                            data_f = stackstac.stack(s, assets=conf["assets"], bounds_latlon=st.session_state['bbox'], epsg=32720, resolution=conf["res"]*2).squeeze().compute()
+                            data_f = stackstac.stack(s, assets=conf["assets"], bounds_latlon=st.session_state['bbox'], epsg=dynamic_epsg, resolution=conf["res"]*2).squeeze().compute()
                             img_np = np.moveaxis(data_f.values, 0, -1)
                             
                             nodata_mask = np.any(np.isnan(img_np) | (img_np <= 0), axis=-1)
