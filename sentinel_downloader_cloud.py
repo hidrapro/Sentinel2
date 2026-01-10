@@ -249,7 +249,7 @@ if st.session_state['bbox']:
 LocateControl(auto_start=False).add_to(m)
 Draw(draw_options={'polyline':False, 'polygon':False, 'circle':False, 'marker':False, 'circlemarker':False, 'rectangle':True}).add_to(m)
 
-# st_folium con key estable y sin actualizaciones agresivas de retorno
+# st_folium con clave estática para evitar reconstrucciones innecesarias
 map_data = st_folium(
     m, 
     width=1200, 
@@ -257,31 +257,31 @@ map_data = st_folium(
     key="main_map"
 )
 
-# --- SINCRONIZACIÓN DE ESTADO ---
+# --- SINCRONIZACIÓN DE ESTADO ESTABILIZADA ---
 if map_data:
-    # Actualizamos centro y zoom SOLO si cambiaron significativamente para evitar "rebotes"
+    # Captura de centro con redondeo para evitar jitter y rebotes
     if map_data.get('center'):
-        new_lat = map_data['center']['lat']
-        new_lng = map_data['center']['lng']
-        if abs(new_lat - st.session_state['map_center'][0]) > 0.0001 or \
-           abs(new_lng - st.session_state['map_center'][1]) > 0.0001:
+        new_lat = round(map_data['center']['lat'], 4)
+        new_lng = round(map_data['center']['lng'], 4)
+        # Solo actualizamos si el cambio es real (evitamos micro-movimientos de punto flotante)
+        if abs(new_lat - st.session_state['map_center'][0]) > 0.001 or \
+           abs(new_lng - st.session_state['map_center'][1]) > 0.001:
             st.session_state['map_center'] = [new_lat, new_lng]
     
     if map_data.get('zoom'):
         if map_data['zoom'] != st.session_state['map_zoom']:
             st.session_state['map_zoom'] = map_data['zoom']
     
-    # Procesar dibujos sin forzar rerun inmediato
-    if map_data.get('last_active_drawing'):
-        drawing = map_data['last_active_drawing']
+    # Captura de AOI sin forzar rerun (el usuario ya ve lo que dibujó)
+    if map_data.get('all_drawings') and len(map_data['all_drawings']) > 0:
+        drawing = map_data['all_drawings'][-1]
         if drawing.get('geometry'):
             coords = drawing['geometry']['coordinates'][0]
             lons, lats = [c[0] for c in coords], [c[1] for c in coords]
             new_bbox = [min(lons), min(lats), max(lons), max(lats)]
             if st.session_state['bbox'] != new_bbox:
                 st.session_state['bbox'] = new_bbox
-                # Solo un rerun si realmente cambió el área elegida
-                st.rerun()
+                # Aquí no hacemos rerun para que no "salte" mientras el usuario opera el mapa
 
 # --- LÓGICA DE BÚSQUEDA ---
 if st.session_state['bbox']:
