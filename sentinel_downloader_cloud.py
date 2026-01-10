@@ -99,38 +99,28 @@ SAT_CONFIG = {
 # --- FUNCIONES AUXILIARES ---
 def get_utm_epsg(lon, lat):
     """Calcula el código EPSG de la zona UTM correcta según coordenadas."""
-    # Calcular zona UTM
     utm_zone = int((lon + 180) / 6) + 1
-    
-    # Determinar hemisferio y código EPSG
     if lat >= 0:
-        # Hemisferio Norte: 326XX
         epsg_code = 32600 + utm_zone
     else:
-        # Hemisferio Sur: 327XX
         epsg_code = 32700 + utm_zone
-    
     return epsg_code
 
 def normalize_image_robust(img_arr, p_low=2, p_high=98, scale=1.0, offset=0.0):
     """Normalización robusta de imagen con percentiles."""
     img = img_arr * scale + offset
-    
     if img.ndim == 3:
         out = np.zeros_like(img, dtype=np.uint8)
         for i in range(img.shape[2]):
             band = img[:, :, i]
-            # Filtrar valores válidos (no NaN y mayores a un umbral bajo)
             valid = band[(~np.isnan(band)) & (band > -0.5)]
-            if valid.size > 100:  # Asegurar suficientes píxeles válidos
+            if valid.size > 100:
                 vmin, vmax = np.percentile(valid, [p_low, p_high])
-                # Evitar división por cero
                 if vmax > vmin:
                     band_norm = (band - vmin) / (vmax - vmin) * 255
                     out[:, :, i] = np.clip(band_norm, 0, 255).astype(np.uint8)
         return out
     else:
-        # Filtrar valores válidos
         valid = img[(~np.isnan(img)) & (img > -0.5)]
         if valid.size > 100:
             vmin, vmax = np.percentile(valid, [p_low, p_high])
@@ -140,29 +130,37 @@ def normalize_image_robust(img_arr, p_low=2, p_high=98, scale=1.0, offset=0.0):
         return np.zeros((*img.shape, 3), dtype=np.uint8)
 
 def add_text_to_image(img, text):
-    """Añadir texto a una imagen PIL en la parte inferior."""
+    """Añadir texto a una imagen PIL con tamaño proporcional a la resolución de la imagen."""
     draw = ImageDraw.Draw(img)
+    
+    # Cálculo dinámico basado en el ancho de la imagen para homogeneidad
+    # Usamos aproximadamente el 4% del ancho como tamaño de fuente base
+    font_size = max(14, int(img.width * 0.04))
+    padding = int(font_size * 0.4)
+    margin_bottom = int(font_size * 0.6)
+
     try:
-        # Tamaño fijo que funciona bien para todas las resoluciones
-        font_size = 40
         font = ImageFont.truetype("arial.ttf", font_size)
     except:
         font = ImageFont.load_default()
     
+    # Obtener dimensiones del texto
     bbox = draw.textbbox((0, 0), text, font=font)
-    w, h = bbox[2] - bbox[0], bbox[3] - bbox[1]
+    tw = bbox[2] - bbox[0]
+    th = bbox[3] - bbox[1]
     
-    # Posición en la parte inferior centrada
-    x_pos = (img.width - w) // 2
-    y_pos = img.height - h - 30
+    # Posición central inferior
+    x_pos = (img.width - tw) // 2
+    y_pos = img.height - th - margin_bottom
     
-    # Fondo semi-transparente
-    padding = 15
+    # Dibujar fondo (rectángulo)
     draw.rectangle(
         [(x_pos - padding, y_pos - padding), 
-         (x_pos + w + padding, y_pos + h + padding)], 
-        fill=(0, 0, 0, 200)
+         (x_pos + tw + padding, y_pos + th + padding)], 
+        fill=(0, 0, 0, 180)
     )
+    
+    # Dibujar texto
     draw.text((x_pos, y_pos), text, fill=(255, 255, 255), font=font)
     return img
 
@@ -231,7 +229,6 @@ if map_data and map_data.get('all_drawings'):
     coords = map_data['all_drawings'][-1]['geometry']['coordinates'][0]
     lons, lats = [c[0] for c in coords], [c[1] for c in coords]
     bbox = [min(lons), min(lats), max(lons), max(lats)]
-    # Calcular centro del bbox para determinar zona UTM
     center_lon = (min(lons) + max(lons)) / 2
     center_lat = (min(lats) + max(lats)) / 2
     epsg_code = get_utm_epsg(center_lon, center_lat)
@@ -318,11 +315,13 @@ if bbox:
                             try:
                                 date_str = s.datetime.strftime('%d/%m/%Y')
                                 status.update(label=f"Analizando frame {processed + 1}: {date_str}...")
+                                # Generamos el frame a resolución visual (x2 la nativa para fluidez)
                                 data_f = stackstac.stack(s, assets=conf["assets"], bounds_latlon=bbox, epsg=epsg_code, resolution=conf["res"]*2).squeeze().compute()
                                 check_np = data_f.sel(band=conf["assets"][0]).values
                                 if np.mean(np.isnan(check_np) | (check_np <= 0)) > 0.20: continue
                                 img_np = np.moveaxis(data_f.sel(band=conf["assets"][:3]).values, 0, -1)
                                 img_8bit = normalize_image_robust(img_np, percentil_bajo, percentil_alto, conf["scale"], conf["offset"])
+                                # Añadimos el texto adaptativo
                                 frames_list.append((s.datetime, add_text_to_image(Image.fromarray(img_8bit), date_str)))
                                 processed += 1
                             except: continue
@@ -332,19 +331,15 @@ if bbox:
                             frames_list.sort(key=lambda x: x[0])
                             images_only = [np.array(f[1]) for f in frames_list]
                             
-                            # Crear video con imageio
                             with tempfile.NamedTemporaryFile(suffix='.mp4', delete=False) as tmp:
                                 writer = imageio.get_writer(tmp.name, fps=video_fps, codec='libx264', quality=8)
-                                
                                 for frame in images_only:
                                     writer.append_data(frame)
-                                
                                 writer.close()
                                 
                                 with open(tmp.name, 'rb') as f:
                                     video_bytes = f.read()
                             
-                            # Mostrar video con autoplay
                             st.success(f"✅ Video generado: {len(images_only)} frames a {video_fps} FPS")
                             st.video(video_bytes, autoplay=True)
                             st.download_button("📥 Descargar Video MP4", video_bytes, "serie_temporal.mp4", mime="video/mp4")
