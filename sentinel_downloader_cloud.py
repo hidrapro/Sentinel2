@@ -130,11 +130,11 @@ def normalize_image_robust(img_arr, p_low=2, p_high=98, scale=1.0, offset=0.0):
         return np.zeros((*img.shape, 3), dtype=np.uint8)
 
 def add_text_to_image(img, text):
-    """Añadir texto a una imagen PIL con tamaño equilibrado (7% del ancho)."""
+    """Añadir texto a una imagen PIL con tamaño equilibrado (5% del ancho)."""
     draw = ImageDraw.Draw(img)
     
-    # Reducido al 7% del ancho de la imagen (antes 15%)
-    font_size = int(img.width * 0.07)
+    # Reducido al 5% del ancho de la imagen
+    font_size = int(img.width * 0.05)
     
     font = None
     # Rutas comunes de fuentes en Linux/Streamlit Cloud
@@ -161,8 +161,8 @@ def add_text_to_image(img, text):
     th = bbox[3] - bbox[1]
     
     # Padding y márgenes ajustados al nuevo tamaño
-    padding = int(font_size * 0.15)
-    margin_bottom = int(font_size * 0.25)
+    padding = int(font_size * 0.2)
+    margin_bottom = int(font_size * 0.3)
     
     # Posición central inferior
     x_pos = (img.width - tw) // 2
@@ -369,6 +369,7 @@ if bbox:
                                 with open(tmp.name, 'rb') as f:
                                     video_bytes = f.read()
                             
+                            # Visualización inmediata una vez listo
                             st.success(f"✅ Video generado: {len(images_only)} frames a {video_fps} FPS")
                             st.video(video_bytes, autoplay=True)
                             st.download_button("📥 Descargar Video MP4", video_bytes, "serie_temporal.mp4", mime="video/mp4")
