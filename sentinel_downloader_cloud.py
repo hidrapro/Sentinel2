@@ -203,14 +203,20 @@ def normalize_image_robust(img_array, percentile_low=2, percentile_high=98, scal
 def add_text_to_image(img_pil, text):
     draw = ImageDraw.Draw(img_pil)
     w, h = img_pil.size
-    fs = max(14, min(w // 20, h // 10))
-    try: font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", fs)
-    except: font = ImageFont.load_default()
+    # Tamaño de fuente proporcional al ancho del frame para mantener consistencia visual
+    fs = int(max(14, w * 0.04)) 
+    try: 
+        font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", fs)
+    except: 
+        font = ImageFont.load_default()
+    
     bb = draw.textbbox((0, 0), text, font=font)
     tw, th = bb[2]-bb[0], bb[3]-bb[1]
-    m = fs // 4
-    x, y = (w - tw) // 2, h - th - m * 2
-    draw.rectangle([x-m, y-m, x+tw+m, y+th+m], fill=(0,0,0,180))
+    m = fs // 3 # Margen interno del cartel
+    x, y = (w - tw) // 2, h - th - m * 3
+    
+    # Cartel de fondo (rectángulo semi-transparente)
+    draw.rectangle([x-m, y-m, x+tw+m, y+th+m], fill=(0,0,0,160))
     draw.text((x, y), text, fill=(255,255,255), font=font)
     return img_pil
 
@@ -325,7 +331,7 @@ if 'scenes_before' in st.session_state:
                             Image.fromarray(img_8bit).save(buf, format='JPEG', quality=95)
                             st.download_button(f"📷 {fname}.jpg", buf.getvalue(), f"{fname}.jpg")
 
-        # --- LÓGICA DE ANIMACIÓN ---
+        # --- LÓGICA DE ANIMACIÓN (Estandarización de escala visual) ---
         if "Animación" in formato_descarga or "Todos" == formato_descarga:
             st.markdown("---")
             if st.button("🎬 Generar Serie Temporal (Video/GIF)"):
@@ -346,7 +352,16 @@ if 'scenes_before' in st.session_state:
                             if np.mean(nodata_mask) > 0.25: continue
                             
                             img_8bit = normalize_image_robust(img_np, percentil_bajo, percentil_alto, conf["scale"], conf["offset"])
-                            frames_list.append((s.datetime, add_text_to_image(Image.fromarray(img_8bit), date_str)))
+                            
+                            # Estandarización de tamaño para que el texto sea siempre proporcional
+                            img_pil = Image.fromarray(img_8bit)
+                            base_w = 800 # Ancho base para la animación
+                            curr_w, curr_h = img_pil.size
+                            if curr_w != base_w:
+                                new_h = int(curr_h * (base_w / curr_w))
+                                img_pil = img_pil.resize((base_w, new_h), resample=Image.LANCZOS)
+                            
+                            frames_list.append((s.datetime, add_text_to_image(img_pil, date_str)))
                             processed_count += 1
                         except: continue
                     
