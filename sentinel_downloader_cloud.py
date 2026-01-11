@@ -197,7 +197,7 @@ def apply_bulk_coverage_filter(items, bbox, epsg_code, asset_key):
                 bounds_latlon=bbox, 
                 epsg=epsg_code, 
                 resolution=500,
-                dtype="float32",
+                dtype="float64", # Cambiado a float64 para evitar incompatibilidad con np.nan
                 fill_value=np.nan,
                 rescale=False  # Crucial: evita errores de casteo al no necesitar valores reales
             )
