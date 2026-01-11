@@ -19,53 +19,59 @@ import imageio
 # --- CONFIGURACIÓN DE PÁGINA ---
 st.set_page_config(page_title="Satelites LandSat y Sentinel 2", layout="wide", page_icon="🛰️")
 
-# --- CSS PARA MAXIMIZAR COMPACIDAD ---
+# --- CSS PARA MAXIMIZAR COMPACIDAD SIN PERDER VISIBILIDAD ---
 st.markdown("""
     <style>
-    /* Reducir márgenes del contenedor principal */
-    .block-container {
-        padding-top: 0.5rem !important;
-        padding-bottom: 0rem !important;
-        padding-left: 1rem !important;
-        padding-right: 1rem !important;
+    /* Tamaño de fuente global más pequeño para que entre todo */
+    html, body, [class*="st-"] {
+        font-size: 0.9rem !important;
     }
     
-    /* Títulos y encabezados ultra compactos */
+    /* Contenedor principal: Menos padding pero con aire suficiente */
+    .block-container {
+        padding-top: 1.5rem !important;
+        padding-bottom: 0rem !important;
+        padding-left: 1.5rem !important;
+        padding-right: 1.5rem !important;
+    }
+    
+    /* Títulos: Letra más chica y márgenes controlados */
     h1 {
-        font-size: 1.5rem !important;
-        margin-top: -2.5rem !important;
+        font-size: 1.4rem !important;
+        margin-top: -1.5rem !important;
         margin-bottom: 0.5rem !important;
-        padding-bottom: 0 !important;
+        font-weight: 800 !important;
     }
     h2, h3 {
-        margin-top: 0.2rem !important;
+        margin-top: 0.4rem !important;
         margin-bottom: 0.2rem !important;
-        font-size: 1.1rem !important;
+        font-size: 1.05rem !important;
+        font-weight: 700 !important;
     }
     
-    /* Reducir espacio entre widgets (Vertical Block Gap) */
+    /* Espaciado entre widgets: Compacto pero no asfixiante */
     [data-testid="stVerticalBlock"] {
-        gap: 0.2rem !important;
+        gap: 0.4rem !important;
     }
     
-    /* Reducir márgenes de cada elemento individual */
+    /* Espaciado entre elementos de Streamlit */
     div.stElementContainer {
-        margin-bottom: 0.1rem !important;
+        margin-bottom: 0.2rem !important;
     }
     
     /* Compactar la barra lateral */
     [data-testid="stSidebar"] [data-testid="stVerticalBlock"] {
-        gap: 0.3rem !important;
-        padding-top: 0.5rem !important;
+        gap: 0.4rem !important;
+        padding-top: 1rem !important;
     }
     [data-testid="stSidebar"] hr {
-        margin: 0.3rem 0 !important;
+        margin: 0.4rem 0 !important;
     }
     
-    /* Reducir interlineado en textos y párrafos */
+    /* Interlineado de textos */
     div[data-testid="stMarkdownContainer"] p {
-        margin-bottom: 0.1rem !important;
-        line-height: 1.2 !important;
+        margin-bottom: 0.2rem !important;
+        line-height: 1.3 !important;
     }
 
     .result-text {
@@ -74,7 +80,7 @@ st.markdown("""
         height: 100%;
         font-weight: bold;
         color: #2e7d32;
-        font-size: 0.9rem;
+        font-size: 0.85rem;
     }
     
     .instruction-text {
@@ -82,7 +88,7 @@ st.markdown("""
         font-style: italic;
         margin-bottom: 5px;
         display: block;
-        font-size: 0.85rem;
+        font-size: 0.8rem;
     }
     
     .highlight-search {
