@@ -167,14 +167,20 @@ def get_utm_epsg(lon, lat):
     return epsg_code
 
 def check_nodata_fast(item, bbox, epsg, asset_name):
-    """Calcula el % de pixeles negros/sin datos de forma ultrarrápida (baja res)"""
+    """Calcula el % de pixeles negros/sin datos en el recorte exacto"""
     try:
-        # Cargamos a 500m de resolución para que sea instantáneo
-        ds = stackstac.stack(item, assets=[asset_name], bounds_latlon=bbox, epsg=epsg, resolution=500).squeeze().compute()
+        # Estimamos una resolución que nos dé unos 50x50 píxeles para el chequeo rápido
+        # para evitar errores en áreas muy pequeñas o muy grandes.
+        width_m = (bbox[2] - bbox[0]) * 111320 * np.cos(np.radians(bbox[1]))
+        res_check = max(10, width_m / 50) 
+        
+        ds = stackstac.stack(item, assets=[asset_name], bounds_latlon=bbox, epsg=epsg, resolution=res_check).squeeze().compute()
         data = ds.values
-        nodata_count = np.sum((data <= 0) | np.isnan(data))
-        return (nodata_count / data.size) * 100
-    except:
+        # Consideramos 0, valores negativos (comunes en Landsat escalado) y NaNs como Sin Datos
+        nodata_mask = (data <= 0) | np.isnan(data)
+        percentage = (np.sum(nodata_mask) / data.size) * 100
+        return float(percentage)
+    except Exception:
         return 0.0
 
 def normalize_image_robust(img_arr, p_low=2, p_high=98, scale=1.0, offset=0.0):
@@ -298,13 +304,18 @@ if bbox:
             all_items = list(search.items())
             
             if all_items:
-                # ESTRATEGIA: Escaneo rápido de píxeles negros para cada imagen encontrada
+                # ESTRATEGIA: Analizar píxeles reales de cada imagen encontrada
                 with st.status("Analizando cobertura real de datos...") as status:
                     for i, item in enumerate(all_items):
                         status.update(label=f"Chequeando imagen {i+1}/{len(all_items)}...")
-                        # Usamos la banda 2 (índice 2, ej. Red) para chequear datos
-                        check_asset = conf["assets"][2] if len(conf["assets"]) > 2 else list(item.assets.keys())[0]
-                        item.properties["custom_nodata"] = check_nodata_fast(item, bbox, epsg_code, check_asset)
+                        # Elegimos una banda para el chequeo (B04 para S2, red para Landsat)
+                        check_asset = "B04" if "sentinel" in conf["collection"] else "red"
+                        if check_asset not in item.assets:
+                            check_asset = list(item.assets.keys())[0]
+                        
+                        # Inyectamos el valor directamente en los metadatos del objeto
+                        pct = check_nodata_fast(item, bbox, epsg_code, check_asset)
+                        item.properties["custom_nodata_pct"] = pct
 
                 st.session_state['scenes_before'] = [i for i in all_items if i.datetime < fecha_referencia.replace(tzinfo=i.datetime.tzinfo)]
                 st.session_state['scenes_after'] = [i for i in all_items if i.datetime >= fecha_referencia.replace(tzinfo=i.datetime.tzinfo)]
@@ -334,12 +345,17 @@ if bbox:
         
         if all_scenes:
             if formato_descarga != "Video MP4":
-                # ACTUALIZACIÓN: Agregado el porcentaje de No-Data a la etiqueta del selectbox
+                # ACTUALIZACIÓN: Etiqueta enriquecida con icono y porcentaje real
                 scene_opts = {}
                 for i, s in enumerate(all_scenes):
-                    nodata = s.properties.get('custom_nodata', 0.0)
-                    label = f"{s.datetime.strftime('%d/%m/%Y')} | Nubes: {s.properties[conf['cloud_key']]:.1f}% | Sin Datos: {nodata:.1f}%"
-                    if nodata > 5: label += " ⚠️" # Aviso visual si falta más del 5%
+                    pct_val = s.properties.get("custom_nodata_pct", 0.0)
+                    date_str = s.datetime.strftime('%d/%m/%Y')
+                    clouds = s.properties[conf['cloud_key']]
+                    
+                    label = f"📅 {date_str} | ☁️ {clouds:.1f}% | ⬛ Sin Datos: {pct_val:.1f}%"
+                    if pct_val > 5.0:
+                        label += " ⚠️ (IMAGEN PARCIAL)"
+                    
                     scene_opts[label] = i
                 
                 idx_name = st.selectbox("Seleccionar imagen específica:", list(scene_opts.keys()))
