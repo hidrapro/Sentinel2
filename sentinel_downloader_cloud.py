@@ -198,7 +198,8 @@ def apply_bulk_coverage_filter(items, bbox, epsg_code, asset_key):
                 epsg=epsg_code, 
                 resolution=500,
                 dtype="float32",
-                fill_value=np.nan
+                fill_value=np.nan,
+                rescale=False  # Crucial: evita errores de casteo al no necesitar valores reales
             )
             
             # Aseguramos la selección de la banda y limpiamos dimensiones
