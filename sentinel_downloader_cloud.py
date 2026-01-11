@@ -330,13 +330,13 @@ if map_data and map_data.get('all_drawings'):
     else:
         bbox = [min(lons), min(lats), max(lons), max(lats)]
         
-    # --- CÁLCULO DE ÁREA (LIMITACIÓN A 150 KM2) ---
+    # --- CÁLCULO DE ÁREA (LIMITACIÓN A 1000 KM2) ---
     width_km = abs(bbox[2] - bbox[0]) * 111.32 * np.cos(np.radians((bbox[1]+bbox[3])/2))
     height_km = abs(bbox[3] - bbox[1]) * 110.57
     area_km2 = width_km * height_km
     
-    if area_km2 > 150:
-        st.error(f"⚠️ El área seleccionada ({area_km2:.1f} km²) es demasiado grande. El máximo permitido es 150 km² para garantizar estabilidad.")
+    if area_km2 > 1000:
+        st.error(f"⚠️ El área seleccionada ({area_km2:.1f} km²) es demasiado grande. El máximo permitido es 1000 km² para garantizar estabilidad.")
         search_allowed = False
     else:
         st.info(f"📏 Área seleccionada: {area_km2:.1f} km²")
