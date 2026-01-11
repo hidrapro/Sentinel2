@@ -166,6 +166,17 @@ def get_utm_epsg(lon, lat):
     epsg_code = (32600 if lat >= 0 else 32700) + utm_zone
     return epsg_code
 
+def check_nodata_fast(item, bbox, epsg, asset_name):
+    """Calcula el % de pixeles negros/sin datos de forma ultrarrápida (baja res)"""
+    try:
+        # Cargamos a 500m de resolución para que sea instantáneo
+        ds = stackstac.stack(item, assets=[asset_name], bounds_latlon=bbox, epsg=epsg, resolution=500).squeeze().compute()
+        data = ds.values
+        nodata_count = np.sum((data <= 0) | np.isnan(data))
+        return (nodata_count / data.size) * 100
+    except:
+        return 0.0
+
 def normalize_image_robust(img_arr, p_low=2, p_high=98, scale=1.0, offset=0.0):
     img = img_arr * scale + offset
     if img.ndim == 3:
@@ -261,31 +272,20 @@ if map_data and map_data.get('all_drawings'):
 
 # --- LÓGICA DE BÚSQUEDA ---
 if bbox:
-    # Guía visual cuando se detecta el AOI pero aún no se busca
     if st.session_state.search_count is None and not st.session_state.searching:
         st.success("✅ ¡Área seleccionada! Haz clic en el botón inferior para buscar imágenes.")
     
-    # Columnas para botón y contador
     col_btn, col_count = st.columns([0.2, 0.8])
-    
     with col_btn:
-        # Aplicamos la clase de resaltado si el usuario aún no ha buscado
         needs_highlight = st.session_state.search_count is None and not st.session_state.searching
-        btn_container = st.container()
-        
-        if needs_highlight:
-            st.markdown('<div class="highlight-search">', unsafe_allow_html=True)
-            
+        if needs_highlight: st.markdown('<div class="highlight-search">', unsafe_allow_html=True)
         btn_text = "Buscando Imagenes" if st.session_state.searching else "🔍 Buscar Imágenes"
         if st.button(btn_text, disabled=st.session_state.searching, use_container_width=True):
             st.session_state.searching = True
-            st.session_state.video_result = None # Limpiar video anterior al buscar nuevo
+            st.session_state.video_result = None
             st.rerun()
-            
-        if needs_highlight:
-            st.markdown('</div>', unsafe_allow_html=True)
+        if needs_highlight: st.markdown('</div>', unsafe_allow_html=True)
 
-    # Si el estado es "buscando", ejecutamos la lógica real
     if st.session_state.searching:
         try:
             catalog = pystac_client.Client.open("https://planetarycomputer.microsoft.com/api/stac/v1", modifier=planetary_computer.sign_inplace)
@@ -298,6 +298,14 @@ if bbox:
             all_items = list(search.items())
             
             if all_items:
+                # ESTRATEGIA: Escaneo rápido de píxeles negros para cada imagen encontrada
+                with st.status("Analizando cobertura real de datos...") as status:
+                    for i, item in enumerate(all_items):
+                        status.update(label=f"Chequeando imagen {i+1}/{len(all_items)}...")
+                        # Usamos la banda 2 (índice 2, ej. Red) para chequear datos
+                        check_asset = conf["assets"][2] if len(conf["assets"]) > 2 else list(item.assets.keys())[0]
+                        item.properties["custom_nodata"] = check_nodata_fast(item, bbox, epsg_code, check_asset)
+
                 st.session_state['scenes_before'] = [i for i in all_items if i.datetime < fecha_referencia.replace(tzinfo=i.datetime.tzinfo)]
                 st.session_state['scenes_after'] = [i for i in all_items if i.datetime >= fecha_referencia.replace(tzinfo=i.datetime.tzinfo)]
                 st.session_state.search_count = len(all_items)
@@ -311,7 +319,6 @@ if bbox:
             st.session_state.preview_image = None
             st.rerun()
 
-    # Mostrar contador a la derecha
     if st.session_state.search_count is not None:
         with col_count:
             if st.session_state.search_count > 0:
@@ -327,7 +334,14 @@ if bbox:
         
         if all_scenes:
             if formato_descarga != "Video MP4":
-                scene_opts = {f"{s.datetime.strftime('%d/%m/%Y')} | Nubes: {s.properties[conf['cloud_key']]:.1f}%": i for i, s in enumerate(all_scenes)}
+                # ACTUALIZACIÓN: Agregado el porcentaje de No-Data a la etiqueta del selectbox
+                scene_opts = {}
+                for i, s in enumerate(all_scenes):
+                    nodata = s.properties.get('custom_nodata', 0.0)
+                    label = f"{s.datetime.strftime('%d/%m/%Y')} | Nubes: {s.properties[conf['cloud_key']]:.1f}% | Sin Datos: {nodata:.1f}%"
+                    if nodata > 5: label += " ⚠️" # Aviso visual si falta más del 5%
+                    scene_opts[label] = i
+                
                 idx_name = st.selectbox("Seleccionar imagen específica:", list(scene_opts.keys()))
                 item = all_scenes[scene_opts[idx_name]]
 
@@ -405,7 +419,6 @@ if bbox:
                             status.update(label="✅ Video generado correctamente", state="complete")
                             st.rerun()
 
-                # Mostrar el video fuera del st.status si ya existe en el estado
                 if st.session_state.video_result is not None:
                     st.success("🎞️ Video listo para visualizar:")
                     st.video(st.session_state.video_result, autoplay=True)
