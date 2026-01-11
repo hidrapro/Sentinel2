@@ -19,9 +19,20 @@ import imageio
 # --- CONFIGURACIÓN DE PÁGINA ---
 st.set_page_config(page_title="Satelites LandSat y Sentinel 2", layout="wide", page_icon="🛰️")
 
-# --- CSS PARA COMPACTAR LA BARRA LATERAL ---
+# --- CSS PARA AJUSTES DE UI Y POSICIÓN ---
 st.markdown("""
     <style>
+    /* Mover el contenido hacia arriba */
+    .block-container {
+        padding-top: 1rem !important;
+        padding-bottom: 0rem !important;
+    }
+    /* Reducir tamaño del título y quitar margen superior */
+    h1 {
+        font-size: 1.8rem !important;
+        margin-top: -2rem !important;
+        margin-bottom: 1rem !important;
+    }
     [data-testid="stSidebar"] [data-testid="stVerticalBlock"] {
         gap: 0.5rem;
         padding-top: 1rem;
@@ -35,6 +46,12 @@ st.markdown("""
         height: 100%;
         font-weight: bold;
         color: #2e7d32;
+    }
+    .instruction-text {
+        color: #555;
+        font-style: italic;
+        margin-bottom: 10px;
+        display: block;
     }
     </style>
 """, unsafe_allow_html=True)
@@ -213,6 +230,8 @@ with st.sidebar:
 
 # --- MAPA ---
 st.subheader("1. Área de Interés (AOI)")
+st.markdown('<span class="instruction-text">Click sobre la herramienta de dibujo de rectangulo AOI, icono cuadrado.</span>', unsafe_allow_html=True)
+
 tile_urls = {"OpenStreetMap": "OpenStreetMap", "Satélite (Esri)": "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}", "Topográfico (OpenTopo)": "https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png"}
 m = folium.Map(location=[-35.444, -60.884], zoom_start=13, tiles=tile_urls[map_style] if map_style == "OpenStreetMap" else tile_urls[map_style], attr="Tiles &copy; Esri / OpenTopoMap" if map_style != "OpenStreetMap" else None)
 LocateControl().add_to(m)
