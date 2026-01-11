@@ -200,6 +200,8 @@ SAT_CONFIG = {
 
 # --- FUNCIONES AUXILIARES ---
 def get_utm_epsg(lon, lat):
+    # Normalizamos lon antes de calcular UTM
+    lon = ((lon + 180) % 360) - 180
     utm_zone = int((lon + 180) / 6) + 1
     epsg_code = (32600 if lat >= 0 else 32700) + utm_zone
     return epsg_code
@@ -314,8 +316,21 @@ map_data = st_folium(m, use_container_width=True, height=400, key="main_map")
 bbox = None
 if map_data and map_data.get('all_drawings'):
     coords = map_data['all_drawings'][-1]['geometry']['coordinates'][0]
-    lons, lats = [c[0] for c in coords], [c[1] for c in coords]
-    bbox = [min(lons), min(lats), max(lons), max(lats)]
+    # Normalizamos longitudes al rango [-180, 180] para evitar errores al cruzar el antimeridiano
+    lons_raw = [c[0] for c in coords]
+    lons = [((lon + 180) % 360) - 180 for lon in lons_raw]
+    lats = [c[1] for c in coords]
+    
+    # Manejo básico de cruce de línea de fecha: 
+    # si el dibujo es pequeño pero las coordenadas normalizadas saltan de -180 a 180, 
+    # ajustamos para que la búsqueda sea coherente.
+    if max(lons) - min(lons) > 300: # Cruce probable
+        west = max([l for l in lons if l < 0])
+        east = min([l for l in lons if l > 0])
+        bbox = [west, min(lats), east, max(lats)]
+    else:
+        bbox = [min(lons), min(lats), max(lons), max(lats)]
+        
     epsg_code = get_utm_epsg((min(lons)+max(lons))/2, (min(lats)+max(lats))/2)
 
 # --- LÓGICA DE BÚSQUEDA ---
