@@ -139,6 +139,30 @@ def get_utm_epsg(lon, lat):
         epsg_code = 32700 + utm_zone
     return epsg_code
 
+def calculate_data_coverage_fast(scene, bbox):
+    """
+    Calcula rápidamente el porcentaje de cobertura usando la geometría de la escena.
+    No descarga datos, solo compara el bbox con la geometría de la escena.
+    """
+    try:
+        from shapely.geometry import box, shape
+        from shapely.ops import unary_union
+        
+        # Crear bbox como polígono
+        bbox_poly = box(bbox[0], bbox[1], bbox[2], bbox[3])
+        bbox_area = bbox_poly.area
+        
+        # Obtener geometría de la escena
+        scene_geom = shape(scene.geometry)
+        
+        # Calcular intersección
+        intersection = bbox_poly.intersection(scene_geom)
+        coverage = (intersection.area / bbox_area) * 100
+        
+        return min(coverage, 100.0)
+    except:
+        return 100.0  # Si falla, asumir cobertura completa
+
 def calculate_data_coverage(data_array, satellite_type="Sentinel-2"):
     """
     Calcula el porcentaje de píxeles con datos válidos en un array.
@@ -318,14 +342,13 @@ if bbox:
                     if scene_id not in st.session_state.scene_coverage:
                         try:
                             status_text.text(f"Calculando escena {idx + 1}/{len(all_scenes)}: {scene.datetime.strftime('%d/%m/%Y')}")
-                            # Usar resolución MUY baja para cálculo rápido (10x la resolución base)
-                            data_quick = stackstac.stack(scene, assets=[conf["assets"][0]], 
-                                                        bounds_latlon=bbox, epsg=epsg_code, 
-                                                        resolution=conf["res"]*10).squeeze().compute()
-                            coverage = calculate_data_coverage(data_quick.values, sat_choice)
+                            
+                            # Usar cálculo rápido basado en geometría (instantáneo)
+                            coverage = calculate_data_coverage_fast(scene, bbox)
                             st.session_state.scene_coverage[scene_id] = coverage
+                            
                         except Exception as e:
-                            st.session_state.scene_coverage[scene_id] = 0.0
+                            st.session_state.scene_coverage[scene_id] = 100.0
                     
                     progress_bar.progress((idx + 1) / len(all_scenes))
                 
@@ -455,4 +478,3 @@ if bbox:
 
 st.markdown("---")
 st.caption("Ing. Luis A. Carnaghi (lcarnaghi@gmail.com) - Creador.")
-
