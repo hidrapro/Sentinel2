@@ -81,6 +81,8 @@ if "searching" not in st.session_state:
     st.session_state.searching = False
 if "search_count" not in st.session_state:
     st.session_state.search_count = None
+if "video_result" not in st.session_state:
+    st.session_state.video_result = None
 
 # --- DICCIONARIO DE CONFIGURACIÓN POR SATÉLITE ---
 SAT_CONFIG = {
@@ -256,7 +258,6 @@ if map_data and map_data.get('all_drawings'):
     lons, lats = [c[0] for c in coords], [c[1] for c in coords]
     bbox = [min(lons), min(lats), max(lons), max(lats)]
     epsg_code = get_utm_epsg((min(lons)+max(lons))/2, (min(lats)+max(lats))/2)
-    # Se eliminó la visualización del st.info con la zona UTM
 
 # --- LÓGICA DE BÚSQUEDA ---
 if bbox:
@@ -278,6 +279,7 @@ if bbox:
         btn_text = "Buscando Imagenes" if st.session_state.searching else "🔍 Buscar Imágenes"
         if st.button(btn_text, disabled=st.session_state.searching, use_container_width=True):
             st.session_state.searching = True
+            st.session_state.video_result = None # Limpiar video anterior al buscar nuevo
             st.rerun()
             
         if needs_highlight:
@@ -371,6 +373,7 @@ if bbox:
             if "Video" in formato_descarga or formato_descarga == "Todos":
                 st.markdown("---")
                 if st.button("🎬 Generar Video MP4"):
+                    st.session_state.video_result = None
                     frames_list = []
                     pool = sorted(all_scenes, key=lambda x: (abs((x.datetime.replace(tzinfo=None) - fecha_referencia).days), x.properties[conf['cloud_key']]))
                     with st.status("Generando frames...") as status:
@@ -388,16 +391,25 @@ if bbox:
                                 frames_list.append((s.datetime, add_text_to_image(pil_img, s.datetime.strftime('%d/%m/%Y'))))
                                 processed += 1
                             except: continue
+                        
                         if frames_list:
+                            status.update(label="Ensamblando Video...", state="running")
                             frames_list.sort(key=lambda x: x[0])
                             images_only = [np.array(f[1]) for f in frames_list]
                             with tempfile.NamedTemporaryFile(suffix='.mp4', delete=False) as tmp:
                                 writer = imageio.get_writer(tmp.name, fps=video_fps, codec='libx264', quality=8)
                                 for f in images_only: writer.append_data(f)
                                 writer.close()
-                                with open(tmp.name, 'rb') as f: vid_bytes = f.read()
-                            st.video(vid_bytes, autoplay=True)
-                            st.download_button("📥 Descargar Video", vid_bytes, "serie.mp4")
+                                with open(tmp.name, 'rb') as f: 
+                                    st.session_state.video_result = f.read()
+                            status.update(label="✅ Video generado correctamente", state="complete")
+                            st.rerun()
+
+                # Mostrar el video fuera del st.status si ya existe en el estado
+                if st.session_state.video_result is not None:
+                    st.success("🎞️ Video listo para visualizar:")
+                    st.video(st.session_state.video_result, autoplay=True)
+                    st.download_button("📥 Descargar Video MP4", st.session_state.video_result, "serie_temporal.mp4", mime="video/mp4")
 
 st.markdown("---")
 st.caption("Ing. Luis A. Carnaghi (lcarnaghi@gmail.com) - Creador.")
