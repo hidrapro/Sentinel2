@@ -29,25 +29,36 @@ st.markdown("""
     [data-testid="stSidebar"] hr {
         margin: 0.5rem 0;
     }
+    .result-text {
+        display: flex;
+        align-items: center;
+        height: 100%;
+        font-weight: bold;
+        color: #2e7d32;
+    }
     </style>
 """, unsafe_allow_html=True)
 
 st.title("🛰️ Visualizador y descarga de recortes")
 
-# --- INICIALIZACIÓN DE ESTADO PARA BOTONES Y PERSISTENCIA ---
+# --- INICIALIZACIÓN DE ESTADO ---
 if "is_generating_preview" not in st.session_state:
     st.session_state.is_generating_preview = False
 if "preview_image" not in st.session_state:
     st.session_state.preview_image = None
 if "current_scene_id" not in st.session_state:
     st.session_state.current_scene_id = None
+if "searching" not in st.session_state:
+    st.session_state.searching = False
+if "search_count" not in st.session_state:
+    st.session_state.search_count = None
 
 # --- DICCIONARIO DE CONFIGURACIÓN POR SATÉLITE ---
 SAT_CONFIG = {
     "Sentinel-2": {
         "collection": "sentinel-2-l2a",
         "platform": None,
-        "assets": ["B08", "B11", "B04", "B03"], # NIR, SWIR1, RED, GREEN
+        "assets": ["B08", "B11", "B04", "B03"],
         "res": 10,
         "tile_key": "s2:mgrs_tile",
         "cloud_key": "eo:cloud_cover",
@@ -120,16 +131,11 @@ SAT_CONFIG = {
 
 # --- FUNCIONES AUXILIARES ---
 def get_utm_epsg(lon, lat):
-    """Calcula el código EPSG de la zona UTM correcta según coordenadas."""
     utm_zone = int((lon + 180) / 6) + 1
-    if lat >= 0:
-        epsg_code = 32600 + utm_zone
-    else:
-        epsg_code = 32700 + utm_zone
+    epsg_code = (32600 if lat >= 0 else 32700) + utm_zone
     return epsg_code
 
 def normalize_image_robust(img_arr, p_low=2, p_high=98, scale=1.0, offset=0.0):
-    """Normalización robusta de imagen con percentiles."""
     img = img_arr * scale + offset
     if img.ndim == 3:
         out = np.zeros_like(img, dtype=np.uint8)
@@ -152,74 +158,49 @@ def normalize_image_robust(img_arr, p_low=2, p_high=98, scale=1.0, offset=0.0):
         return np.zeros((*img.shape, 3), dtype=np.uint8)
 
 def add_text_to_image(img, text):
-    """Añadir texto a una imagen PIL con tamaño equilibrado (5% del ancho)."""
     draw = ImageDraw.Draw(img)
     font_size = int(img.width * 0.05)
     font = None
-    font_paths = [
-        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
-        "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
-        "/usr/share/fonts/truetype/freefont/FreeSansBold.ttf",
-        "arial.ttf"
-    ]
+    font_paths = ["/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", "arial.ttf"]
     for path in font_paths:
-        try:
-            font = ImageFont.truetype(path, font_size)
-            break
-        except:
-            continue
-    if font is None:
-        font = ImageFont.load_default()
-    bbox = draw.textbbox((0, 0), text, font=font)
-    tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
-    padding = int(font_size * 0.2)
-    margin_bottom = int(font_size * 0.3)
-    x_pos = (img.width - tw) // 2
-    y_pos = img.height - th - margin_bottom
-    draw.rectangle([(x_pos - padding, y_pos - padding), (x_pos + tw + padding, y_pos + th + padding)], fill=(0, 0, 0, 180))
+        try: font = ImageFont.truetype(path, font_size); break
+        except: continue
+    if font is None: font = ImageFont.load_default()
+    bbox_txt = draw.textbbox((0, 0), text, font=font)
+    tw, th = bbox_txt[2] - bbox_txt[0], bbox_txt[3] - bbox_txt[1]
+    x_pos, y_pos = (img.width - tw) // 2, img.height - th - int(font_size * 0.3)
+    draw.rectangle([(x_pos-5, y_pos-5), (x_pos+tw+5, y_pos+th+5)], fill=(0,0,0,180))
     draw.text((x_pos, y_pos), text, fill=(255, 255, 255), font=font)
     return img
 
-# --- SIDEBAR: CONFIGURACIÓN ---
+# --- SIDEBAR ---
 with st.sidebar:
     st.subheader("🛰️ Plataforma")
-    def sat_label_formatter(key):
-        c = SAT_CONFIG[key]
-        end = "Pres." if c["max_year"] == datetime.now().year else str(c["max_year"])
-        return f"{key} ({c['min_year']}-{end})"
-    sat_choice = st.selectbox("Satélite", options=list(SAT_CONFIG.keys()), format_func=sat_label_formatter, label_visibility="collapsed")
+    sat_choice = st.selectbox("Satélite", options=list(SAT_CONFIG.keys()), label_visibility="collapsed")
     conf = SAT_CONFIG[sat_choice]
     
     st.markdown("---")
     st.subheader("📅 Tiempo y Nubes")
     meses = ["Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio", "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"]
     c1, c2 = st.columns(2)
-    with c1:
-        mes_nombre = st.selectbox("Mes", meses, index=datetime.now().month - 1)
-    with c2:
-        anio = st.number_input("Año", min_value=conf["min_year"], max_value=conf["max_year"], value=conf["max_year"])
+    with c1: mes_nombre = st.selectbox("Mes", meses, index=datetime.now().month - 1)
+    with c2: anio = st.number_input("Año", min_value=conf["min_year"], max_value=conf["max_year"], value=conf["max_year"])
     
     mes_num = meses.index(mes_nombre) + 1
     fecha_referencia = datetime(anio, mes_num, 1)
-    
     max_cloud = st.slider("Nubosidad máx. (%)", 0, 100, 15)
     
     st.markdown("---")
     st.subheader("⚙️ Salida")
     map_style = st.selectbox("Estilo Mapa", ["OpenStreetMap", "Satélite (Esri)", "Topográfico (OpenTopo)"])
-    
-    c3, c4 = st.columns([1, 1])
-    with c3:
-        res_final = st.number_input("Res. (m)", value=conf["res"], min_value=10)
-    with c4:
-        percentil_alto = st.number_input("% Alto", value=98, min_value=50, max_value=100)
-    
+    c3, c4 = st.columns(2)
+    with c3: res_final = st.number_input("Res. (m)", value=conf["res"], min_value=10)
+    with c4: percentil_alto = st.number_input("% Alto", value=98, min_value=50, max_value=100)
     formato_descarga = st.radio("Formato de descarga:", ["GeoTIFF (GIS)", "JPG (Visual)", "Video MP4", "Todos"], horizontal=True)
-    
-    # --- SECCIONES COLAPSABLES PARA AHORRAR ESPACIO ---
-    if 'scenes_before' in st.session_state and 'scenes_after' in st.session_state:
+
+    if 'scenes_before' in st.session_state:
         with st.expander("🔍 Filtro Manual de Fechas"):
-            all_candidates = st.session_state['scenes_before'] + st.session_state['scenes_after']
+            all_candidates = st.session_state.get('scenes_before', []) + st.session_state.get('scenes_after', [])
             all_dates = sorted(list(set([s.datetime.strftime('%d/%m/%Y') for s in all_candidates])))
             exclude_dates = st.multiselect("Ignorar estas fechas:", options=all_dates)
     else:
@@ -234,63 +215,71 @@ with st.sidebar:
 st.subheader("1. Área de Interés (AOI)")
 tile_urls = {"OpenStreetMap": "OpenStreetMap", "Satélite (Esri)": "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}", "Topográfico (OpenTopo)": "https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png"}
 m = folium.Map(location=[-35.444, -60.884], zoom_start=13, tiles=tile_urls[map_style] if map_style == "OpenStreetMap" else tile_urls[map_style], attr="Tiles &copy; Esri / OpenTopoMap" if map_style != "OpenStreetMap" else None)
-
-LocateControl(
-    auto_start=False,
-    locateOptions={
-        'setView': 'always', 
-        'flyTo': True, 
-        'maxZoom': 15, 
-        'enableHighAccuracy': True,
-        'padding': [0, 0]
-    },
-    keepCurrentZoomLevel=False,
-    returnToPrevBounds=False,
-    cacheLocation=False
-).add_to(m)
-
+LocateControl().add_to(m)
 Draw(draw_options={'polyline':False, 'polygon':False, 'circle':False, 'marker':False, 'circlemarker':False, 'rectangle':True}).add_to(m)
-
 map_data = st_folium(m, use_container_width=True, height=400, key="main_map")
 
 bbox = None
-epsg_code = None
 if map_data and map_data.get('all_drawings'):
     coords = map_data['all_drawings'][-1]['geometry']['coordinates'][0]
     lons, lats = [c[0] for c in coords], [c[1] for c in coords]
     bbox = [min(lons), min(lats), max(lons), max(lats)]
-    center_lon = (min(lons) + max(lons)) / 2
-    center_lat = (min(lats) + max(lats)) / 2
-    epsg_code = get_utm_epsg(center_lon, center_lat)
+    epsg_code = get_utm_epsg((min(lons)+max(lons))/2, (min(lats)+max(lats))/2)
     st.info(f"📍 Zona UTM detectada: EPSG:{epsg_code}")
 
 # --- LÓGICA DE BÚSQUEDA ---
 if bbox:
-    if st.button(f"🔍 Buscar Imágenes"):
-        with st.spinner("Consultando catálogo STAC..."):
+    # Columnas para botón y contador
+    col_btn, col_count = st.columns([0.2, 0.8])
+    
+    with col_btn:
+        btn_text = "Buscando Imagenes" if st.session_state.searching else "🔍 Buscar Imágenes"
+        # Si ya está buscando, deshabilitamos el botón para evitar clics dobles
+        if st.button(btn_text, disabled=st.session_state.searching, use_container_width=True):
+            st.session_state.searching = True
+            st.rerun()
+
+    # Si el estado es "buscando", ejecutamos la lógica real
+    if st.session_state.searching:
+        try:
             catalog = pystac_client.Client.open("https://planetarycomputer.microsoft.com/api/stac/v1", modifier=planetary_computer.sign_inplace)
             query_params = {conf["cloud_key"]: {"lt": max_cloud}}
             if conf["platform"]: query_params["platform"] = {"in": conf["platform"]}
             common_args = {"collections": [conf["collection"]], "bbox": bbox, "query": query_params}
             fecha_inicio, fecha_fin = fecha_referencia - timedelta(days=365), fecha_referencia + timedelta(days=365)
+            
             search = catalog.search(**common_args, datetime=f"{fecha_inicio.isoformat()}/{fecha_fin.isoformat()}", max_items=100)
             all_items = list(search.items())
+            
             if all_items:
                 st.session_state['scenes_before'] = [i for i in all_items if i.datetime < fecha_referencia.replace(tzinfo=i.datetime.tzinfo)]
                 st.session_state['scenes_after'] = [i for i in all_items if i.datetime >= fecha_referencia.replace(tzinfo=i.datetime.tzinfo)]
-                st.session_state.preview_image = None
-                st.rerun()
+                st.session_state.search_count = len(all_items)
             else:
-                st.error("No se encontraron imágenes en el área.")
+                st.session_state.search_count = 0
+        except Exception as e:
+            st.error(f"Error en la búsqueda: {e}")
+            st.session_state.search_count = 0
+        finally:
+            st.session_state.searching = False
+            st.session_state.preview_image = None
+            st.rerun()
 
+    # Mostrar contador a la derecha
+    if st.session_state.search_count is not None:
+        with col_count:
+            if st.session_state.search_count > 0:
+                st.markdown(f'<div class="result-text">✨ Se encontraron {st.session_state.search_count} imágenes</div>', unsafe_allow_html=True)
+            else:
+                st.markdown('<div class="result-text" style="color:red">No se encontraron resultados.</div>', unsafe_allow_html=True)
+
+    # --- DESPLIEGUE DE RESULTADOS ---
     if 'scenes_before' in st.session_state:
         full_pool = st.session_state['scenes_before'] + st.session_state['scenes_after']
         all_scenes = [s for s in full_pool if s.datetime.strftime('%d/%m/%Y') not in exclude_dates]
         all_scenes.sort(key=lambda x: x.datetime)
         
-        if not all_scenes:
-            st.warning("No hay escenas disponibles.")
-        else:
+        if all_scenes:
             if formato_descarga != "Video MP4":
                 scene_opts = {f"{s.datetime.strftime('%d/%m/%Y')} | Nubes: {s.properties[conf['cloud_key']]:.1f}%": i for i, s in enumerate(all_scenes)}
                 idx_name = st.selectbox("Seleccionar imagen específica:", list(scene_opts.keys()))
@@ -300,25 +289,18 @@ if bbox:
                     st.session_state.preview_image = None
                     st.session_state.current_scene_id = item.id
 
-                with st.expander("ℹ️ Información Técnica"):
-                    st.write(f"**ID:** `{item.id}`")
-                    st.write(f"**Plataforma:** {item.properties.get('platform', 'N/A')}")
-                    st.write(f"**Nubes:** {item.properties.get(conf['cloud_key'], 0):.2f}%")
-
                 col_btn1, col_btn2 = st.columns(2)
                 with col_btn1:
-                    preview_btn_label = "⏳ Generando..." if st.session_state.is_generating_preview else "🖼️ Vista Previa"
-                    if st.button(preview_btn_label):
+                    if st.button("🖼️ Vista Previa", disabled=st.session_state.is_generating_preview):
                         st.session_state.is_generating_preview = True
                         st.rerun()
                     
                     if st.session_state.is_generating_preview:
                         try:
-                            with st.spinner("Procesando..."):
+                            with st.spinner("Procesando vista previa..."):
                                 data_raw = stackstac.stack(item, assets=conf["assets"], bounds_latlon=bbox, epsg=epsg_code, resolution=conf["res"]*2).squeeze().compute()
                                 img_np = np.moveaxis(data_raw.sel(band=conf["assets"][:3]).values, 0, -1)
-                                img = normalize_image_robust(img_np, 2, percentil_alto, conf["scale"], conf["offset"])
-                                st.session_state.preview_image = img
+                                st.session_state.preview_image = normalize_image_robust(img_np, 2, percentil_alto, conf["scale"], conf["offset"])
                         finally:
                             st.session_state.is_generating_preview = False
                             st.rerun()
@@ -328,23 +310,20 @@ if bbox:
 
                 with col_btn2:
                     if st.button("🚀 Descargar HD"):
-                        with st.status("Procesando datos HD..."):
+                        with st.status("Preparando archivos HD..."):
                             data_raw = stackstac.stack(item, assets=conf["assets"], bounds_latlon=bbox, epsg=epsg_code, resolution=res_final).squeeze()
                             data_final = data_raw.sel(band=conf["assets"][:3])
-                            fname = f"{sat_choice.replace(' ', '_')}_{item.datetime.strftime('%Y%m%d')}_RGB"
+                            fname = f"{sat_choice.replace(' ', '_')}_{item.datetime.strftime('%Y%m%d')}"
                             if "GeoTIFF" in formato_descarga or formato_descarga == "Todos":
                                 with tempfile.NamedTemporaryFile(suffix='.tif', delete=False) as tmp:
                                     data_final.rio.to_raster(tmp.name)
-                                    with open(tmp.name, 'rb') as f: st.download_button(f"📥 {fname}.tif", f.read(), f"{fname}.tif")
+                                    with open(tmp.name, 'rb') as f: st.download_button(f"📥 Descargar .tif", f.read(), f"{fname}.tif")
                             if "JPG" in formato_descarga or formato_descarga == "Todos":
-                                data_np = data_final.compute().values
-                                img_input = np.moveaxis(data_np, 0, -1)
-                                img_8bit = normalize_image_robust(img_input, 2, percentil_alto, conf["scale"], conf["offset"])
+                                img_8bit = normalize_image_robust(np.moveaxis(data_final.compute().values, 0, -1), 2, percentil_alto, conf["scale"], conf["offset"])
                                 buf = io.BytesIO()
                                 Image.fromarray(img_8bit).save(buf, format='JPEG', quality=95)
-                                st.download_button(f"📷 {fname}.jpg", buf.getvalue(), f"{fname}.jpg")
+                                st.download_button(f"📷 Descargar .jpg", buf.getvalue(), f"{fname}.jpg")
 
-            # --- LÓGICA DE VIDEO MP4 ---
             if "Video" in formato_descarga or formato_descarga == "Todos":
                 st.markdown("---")
                 if st.button("🎬 Generar Video MP4"):
@@ -355,32 +334,26 @@ if bbox:
                         for s in pool:
                             if processed >= video_max_images: break
                             try:
-                                date_str = s.datetime.strftime('%d/%m/%Y')
-                                status.update(label=f"Frame {processed + 1}: {date_str}...")
                                 data_f = stackstac.stack(s, assets=conf["assets"], bounds_latlon=bbox, epsg=epsg_code, resolution=conf["res"]*2).squeeze().compute()
-                                check_np = data_f.sel(band=conf["assets"][0]).values
-                                if np.mean(np.isnan(check_np) | (check_np <= 0)) > 0.20: continue
                                 img_np = np.moveaxis(data_f.sel(band=conf["assets"][:3]).values, 0, -1)
                                 img_8bit = normalize_image_robust(img_np, 2, percentil_alto, conf["scale"], conf["offset"])
                                 pil_img = Image.fromarray(img_8bit)
                                 target_w = 1000
-                                h_resize = int(pil_img.height * (target_w / pil_img.width))
-                                pil_img = pil_img.resize((target_w, h_resize), Image.Resampling.LANCZOS)
-                                frames_list.append((s.datetime, add_text_to_image(pil_img, date_str)))
+                                h_res = int(pil_img.height * (target_w / pil_img.width))
+                                pil_img = pil_img.resize((target_w, h_res), Image.Resampling.LANCZOS)
+                                frames_list.append((s.datetime, add_text_to_image(pil_img, s.datetime.strftime('%d/%m/%Y'))))
                                 processed += 1
                             except: continue
                         if frames_list:
-                            status.update(label="Generando video MP4...")
                             frames_list.sort(key=lambda x: x[0])
                             images_only = [np.array(f[1]) for f in frames_list]
                             with tempfile.NamedTemporaryFile(suffix='.mp4', delete=False) as tmp:
                                 writer = imageio.get_writer(tmp.name, fps=video_fps, codec='libx264', quality=8)
-                                for frame in images_only: writer.append_data(frame)
+                                for f in images_only: writer.append_data(f)
                                 writer.close()
-                                with open(tmp.name, 'rb') as f: video_bytes = f.read()
-                            st.success(f"✅ Video generado: {len(images_only)} frames")
-                            st.video(video_bytes, autoplay=True)
-                            st.download_button("📥 Descargar Video MP4", video_bytes, "serie_temporal.mp4", mime="video/mp4")
+                                with open(tmp.name, 'rb') as f: vid_bytes = f.read()
+                            st.video(vid_bytes, autoplay=True)
+                            st.download_button("📥 Descargar Video", vid_bytes, "serie.mp4")
 
 st.markdown("---")
 st.caption("Ing. Luis A. Carnaghi (lcarnaghi@gmail.com) - Creador.")
