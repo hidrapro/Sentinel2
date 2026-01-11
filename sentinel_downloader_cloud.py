@@ -20,9 +20,13 @@ import imageio
 st.set_page_config(page_title="Satelites LandSat y Sentinel 2", layout="wide", page_icon="🛰️")
 st.title("🛰️ Visualizador y descarga de recortes")
 
-# --- INICIALIZACIÓN DE ESTADO PARA BOTONES ---
+# --- INICIALIZACIÓN DE ESTADO PARA BOTONES Y PERSISTENCIA ---
 if "is_generating_preview" not in st.session_state:
     st.session_state.is_generating_preview = False
+if "preview_image" not in st.session_state:
+    st.session_state.preview_image = None
+if "current_scene_id" not in st.session_state:
+    st.session_state.current_scene_id = None
 
 # --- DICCIONARIO DE CONFIGURACIÓN POR SATÉLITE ---
 SAT_CONFIG = {
@@ -247,6 +251,8 @@ if bbox:
             if all_items:
                 st.session_state['scenes_before'] = [i for i in all_items if i.datetime < fecha_referencia.replace(tzinfo=i.datetime.tzinfo)]
                 st.session_state['scenes_after'] = [i for i in all_items if i.datetime >= fecha_referencia.replace(tzinfo=i.datetime.tzinfo)]
+                # Limpiar previsualizaciones antiguas al buscar nuevo
+                st.session_state.preview_image = None
                 st.rerun()
             else:
                 st.error("No se encontraron imágenes en el área.")
@@ -264,6 +270,11 @@ if bbox:
                 idx_name = st.selectbox("Seleccionar imagen específica:", list(scene_opts.keys()))
                 item = all_scenes[scene_opts[idx_name]]
 
+                # Limpiar imagen previa si cambia la selección de escena
+                if st.session_state.current_scene_id != item.id:
+                    st.session_state.preview_image = None
+                    st.session_state.current_scene_id = item.id
+
                 with st.expander("ℹ️ Información Técnica de la Escena"):
                     st.write(f"**ID:** `{item.id}`")
                     st.write(f"**Plataforma:** {item.properties.get('platform', 'N/A')}")
@@ -273,7 +284,7 @@ if bbox:
 
                 col1, col2 = st.columns(2)
                 with col1:
-                    # Lógica de botón dinámico mejorada
+                    # Lógica de botón dinámico mejorada con retorno automático de nombre
                     preview_btn_label = "⏳ Generando Imagen..." if st.session_state.is_generating_preview else "🖼️ Vista Previa"
                     if st.button(preview_btn_label):
                         st.session_state.is_generating_preview = True
@@ -285,9 +296,15 @@ if bbox:
                                 data_raw = stackstac.stack(item, assets=conf["assets"], bounds_latlon=bbox, epsg=epsg_code, resolution=conf["res"]*2).squeeze().compute()
                                 img_np = np.moveaxis(data_raw.sel(band=conf["assets"][:3]).values, 0, -1)
                                 img = normalize_image_robust(img_np, percentil_bajo, percentil_alto, conf["scale"], conf["offset"])
-                                st.image(img, use_container_width=True, caption=f"Composición RGB: {idx_name}")
+                                # Guardar imagen en estado para persistencia tras el rerun del botón
+                                st.session_state.preview_image = img
                         finally:
                             st.session_state.is_generating_preview = False
+                            st.rerun() # Fuerza el redibujado para que el botón recupere su nombre original
+                    
+                    # Mostrar la imagen si existe en el estado de sesión
+                    if st.session_state.preview_image is not None:
+                        st.image(st.session_state.preview_image, use_container_width=True, caption=f"Composición RGB: {idx_name}")
 
                 with col2:
                     if st.button("🚀 Descargar HD"):
