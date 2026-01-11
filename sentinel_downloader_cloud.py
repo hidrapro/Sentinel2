@@ -230,7 +230,7 @@ with st.sidebar:
 
 # --- MAPA ---
 st.subheader("1. Área de Interés (AOI)")
-st.markdown('<span class="instruction-text">Click sobre la herramienta de dibujo de rectangulo AOI, icono cuadrado.</span>', unsafe_allow_html=True)
+st.markdown('<span class="instruction-text">Click sobre el icono cuadrado para dibujar rectangulo AOI.</span>', unsafe_allow_html=True)
 
 tile_urls = {"OpenStreetMap": "OpenStreetMap", "Satélite (Esri)": "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}", "Topográfico (OpenTopo)": "https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png"}
 m = folium.Map(location=[-35.444, -60.884], zoom_start=13, tiles=tile_urls[map_style] if map_style == "OpenStreetMap" else tile_urls[map_style], attr="Tiles &copy; Esri / OpenTopoMap" if map_style != "OpenStreetMap" else None)
