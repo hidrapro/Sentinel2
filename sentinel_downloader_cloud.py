@@ -314,6 +314,7 @@ Draw(draw_options={'polyline':False, 'polygon':False, 'circle':False, 'marker':F
 map_data = st_folium(m, use_container_width=True, height=400, key="main_map")
 
 bbox = None
+search_allowed = True
 if map_data and map_data.get('all_drawings'):
     coords = map_data['all_drawings'][-1]['geometry']['coordinates'][0]
     # Normalizamos longitudes al rango [-180, 180] para evitar errores al cruzar el antimeridiano
@@ -321,9 +322,7 @@ if map_data and map_data.get('all_drawings'):
     lons = [((lon + 180) % 360) - 180 for lon in lons_raw]
     lats = [c[1] for c in coords]
     
-    # Manejo básico de cruce de línea de fecha: 
-    # si el dibujo es pequeño pero las coordenadas normalizadas saltan de -180 a 180, 
-    # ajustamos para que la búsqueda sea coherente.
+    # Manejo básico de cruce de línea de fecha
     if max(lons) - min(lons) > 300: # Cruce probable
         west = max([l for l in lons if l < 0])
         east = min([l for l in lons if l > 0])
@@ -331,12 +330,23 @@ if map_data and map_data.get('all_drawings'):
     else:
         bbox = [min(lons), min(lats), max(lons), max(lats)]
         
+    # --- CÁLCULO DE ÁREA (LIMITACIÓN A 150 KM2) ---
+    width_km = abs(bbox[2] - bbox[0]) * 111.32 * np.cos(np.radians((bbox[1]+bbox[3])/2))
+    height_km = abs(bbox[3] - bbox[1]) * 110.57
+    area_km2 = width_km * height_km
+    
+    if area_km2 > 150:
+        st.error(f"⚠️ El área seleccionada ({area_km2:.1f} km²) es demasiado grande. El máximo permitido es 150 km² para garantizar estabilidad.")
+        search_allowed = False
+    else:
+        st.info(f"📏 Área seleccionada: {area_km2:.1f} km²")
+        
     epsg_code = get_utm_epsg((min(lons)+max(lons))/2, (min(lats)+max(lats))/2)
 
 # --- LÓGICA DE BÚSQUEDA ---
-if bbox:
+if bbox and search_allowed:
     if st.session_state.search_count is None and not st.session_state.searching:
-        st.success("✅ ¡Área seleccionada! Haz clic abajo para buscar.")
+        st.success("✅ ¡Área válida! Haz clic abajo para buscar.")
     
     col_btn, col_count = st.columns([0.2, 0.8])
     with col_btn:
