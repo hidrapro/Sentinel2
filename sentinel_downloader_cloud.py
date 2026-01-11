@@ -130,16 +130,24 @@ def get_utm_epsg(lon, lat):
         epsg_code = 32700 + utm_zone
     return epsg_code
 
-def calculate_data_coverage(data_array):
+def calculate_data_coverage(data_array, satellite_type="Sentinel-2"):
     """
     Calcula el porcentaje de píxeles con datos válidos en un array.
     Retorna el porcentaje de cobertura de datos (0-100).
+    
+    Para Sentinel-2: solo cuenta NaN como sin datos (valor 0 es válido)
+    Para Landsat: cuenta NaN y valores <= 0 como sin datos
     """
     if data_array is None or data_array.size == 0:
         return 0.0
     
-    # Considera como datos válidos los que no son NaN y son mayores a 0
-    valid_data = ~(np.isnan(data_array) | (data_array <= 0))
+    # Para Sentinel-2, solo los NaN son sin datos
+    if "Sentinel" in satellite_type:
+        valid_data = ~np.isnan(data_array)
+    else:
+        # Para Landsat, NaN y valores <= 0 son sin datos
+        valid_data = ~(np.isnan(data_array) | (data_array <= 0))
+    
     coverage = np.mean(valid_data) * 100
     return coverage
 
@@ -300,11 +308,11 @@ if bbox:
                     if scene_id not in st.session_state.scene_coverage:
                         try:
                             status_text.text(f"Calculando escena {idx + 1}/{len(all_scenes)}: {scene.datetime.strftime('%d/%m/%Y')}")
-                            # Usar resolución baja para cálculo rápido
+                            # Usar resolución MUY baja para cálculo rápido (10x la resolución base)
                             data_quick = stackstac.stack(scene, assets=[conf["assets"][0]], 
                                                         bounds_latlon=bbox, epsg=epsg_code, 
-                                                        resolution=conf["res"]*4).squeeze().compute()
-                            coverage = calculate_data_coverage(data_quick.values)
+                                                        resolution=conf["res"]*10).squeeze().compute()
+                            coverage = calculate_data_coverage(data_quick.values, sat_choice)
                             st.session_state.scene_coverage[scene_id] = coverage
                         except Exception as e:
                             st.session_state.scene_coverage[scene_id] = 0.0
@@ -359,7 +367,7 @@ if bbox:
                                 
                                 # Calcular cobertura si no está calculada
                                 if item.id not in st.session_state.scene_coverage:
-                                    coverage = calculate_data_coverage(data_raw.sel(band=conf["assets"][0]).values)
+                                    coverage = calculate_data_coverage(data_raw.sel(band=conf["assets"][0]).values, sat_choice)
                                     st.session_state.scene_coverage[item.id] = coverage
                                 
                                 img_np = np.moveaxis(data_raw.sel(band=conf["assets"][:3]).values, 0, -1)
@@ -408,7 +416,7 @@ if bbox:
                                 check_np = data_f.sel(band=conf["assets"][0]).values
                                 
                                 # Calcular y guardar cobertura
-                                coverage = calculate_data_coverage(check_np)
+                                coverage = calculate_data_coverage(check_np, sat_choice)
                                 st.session_state.scene_coverage[s.id] = coverage
                                 
                                 if coverage < 80: continue  # Saltar si menos del 80% tiene datos
@@ -437,3 +445,4 @@ if bbox:
 
 st.markdown("---")
 st.caption("Ing. Luis A. Carnaghi (lcarnaghi@gmail.com) - Creador.")
+
