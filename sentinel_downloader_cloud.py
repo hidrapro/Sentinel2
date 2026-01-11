@@ -53,6 +53,18 @@ st.markdown("""
         margin-bottom: 10px;
         display: block;
     }
+    /* Efecto de foco/pulso para el botón de búsqueda */
+    .highlight-search {
+        border: 2px solid #2e7d32;
+        border-radius: 8px;
+        padding: 2px;
+        animation: pulse-green 2s infinite;
+    }
+    @keyframes pulse-green {
+        0% { box-shadow: 0 0 0 0 rgba(46, 125, 50, 0.7); }
+        70% { box-shadow: 0 0 0 10px rgba(46, 125, 50, 0); }
+        100% { box-shadow: 0 0 0 0 rgba(46, 125, 50, 0); }
+    }
     </style>
 """, unsafe_allow_html=True)
 
@@ -230,7 +242,7 @@ with st.sidebar:
 
 # --- MAPA ---
 st.subheader("1. Área de Interés (AOI)")
-st.markdown('<span class="instruction-text">Click sobre el Icono cuadrado para dibujar el Area de Interes (AOI).</span>', unsafe_allow_html=True)
+st.markdown('<span class="instruction-text">Click sobre la herramienta de dibujo de rectangulo AOI, icono cuadrado.</span>', unsafe_allow_html=True)
 
 tile_urls = {"OpenStreetMap": "OpenStreetMap", "Satélite (Esri)": "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}", "Topográfico (OpenTopo)": "https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png"}
 m = folium.Map(location=[-35.444, -60.884], zoom_start=13, tiles=tile_urls[map_style] if map_style == "OpenStreetMap" else tile_urls[map_style], attr="Tiles &copy; Esri / OpenTopoMap" if map_style != "OpenStreetMap" else None)
@@ -248,15 +260,28 @@ if map_data and map_data.get('all_drawings'):
 
 # --- LÓGICA DE BÚSQUEDA ---
 if bbox:
+    # Guía visual cuando se detecta el AOI pero aún no se busca
+    if st.session_state.search_count is None and not st.session_state.searching:
+        st.success("✅ ¡Área seleccionada! Haz clic en el botón inferior para buscar imágenes.")
+    
     # Columnas para botón y contador
     col_btn, col_count = st.columns([0.2, 0.8])
     
     with col_btn:
+        # Aplicamos la clase de resaltado si el usuario aún no ha buscado
+        needs_highlight = st.session_state.search_count is None and not st.session_state.searching
+        btn_container = st.container()
+        
+        if needs_highlight:
+            st.markdown('<div class="highlight-search">', unsafe_allow_html=True)
+            
         btn_text = "Buscando Imagenes" if st.session_state.searching else "🔍 Buscar Imágenes"
-        # Si ya está buscando, deshabilitamos el botón para evitar clics dobles
         if st.button(btn_text, disabled=st.session_state.searching, use_container_width=True):
             st.session_state.searching = True
             st.rerun()
+            
+        if needs_highlight:
+            st.markdown('</div>', unsafe_allow_html=True)
 
     # Si el estado es "buscando", ejecutamos la lógica real
     if st.session_state.searching:
