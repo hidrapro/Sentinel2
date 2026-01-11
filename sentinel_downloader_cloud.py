@@ -139,30 +139,6 @@ def get_utm_epsg(lon, lat):
         epsg_code = 32700 + utm_zone
     return epsg_code
 
-def calculate_data_coverage_fast(scene, bbox):
-    """
-    Calcula rápidamente el porcentaje de cobertura usando la geometría de la escena.
-    No descarga datos, solo compara el bbox con la geometría de la escena.
-    """
-    try:
-        from shapely.geometry import box, shape
-        from shapely.ops import unary_union
-        
-        # Crear bbox como polígono
-        bbox_poly = box(bbox[0], bbox[1], bbox[2], bbox[3])
-        bbox_area = bbox_poly.area
-        
-        # Obtener geometría de la escena
-        scene_geom = shape(scene.geometry)
-        
-        # Calcular intersección
-        intersection = bbox_poly.intersection(scene_geom)
-        coverage = (intersection.area / bbox_area) * 100
-        
-        return min(coverage, 100.0)
-    except:
-        return 100.0  # Si falla, asumir cobertura completa
-
 def calculate_data_coverage(data_array, satellite_type="Sentinel-2"):
     """
     Calcula el porcentaje de píxeles con datos válidos en un array.
@@ -337,22 +313,39 @@ if bbox:
                 progress_bar = st.progress(0)
                 status_text = st.empty()
                 
+                # Usar resolución muy baja para Sentinel-2 (más píxeles) y moderada para Landsat
+                if "Sentinel" in sat_choice:
+                    calc_resolution = conf["res"] * 20  # Sentinel: 10m * 20 = 200m
+                else:
+                    calc_resolution = conf["res"] * 10  # Landsat: 30m * 10 = 300m
+                
                 for idx, scene in enumerate(all_scenes):
                     scene_id = scene.id
                     if scene_id not in st.session_state.scene_coverage:
                         try:
-                            status_text.text(f"Calculando escena {idx + 1}/{len(all_scenes)}: {scene.datetime.strftime('%d/%m/%Y')}")
+                            status_text.text(f"Calculando {idx + 1}/{len(all_scenes)}: {scene.datetime.strftime('%d/%m/%Y')}")
                             
-                            # Usar cálculo rápido basado en geometría (instantáneo)
-                            coverage = calculate_data_coverage_fast(scene, bbox)
-                            st.session_state.scene_coverage[scene_id] = coverage
+                            # Descargar solo la primera banda a resolución muy baja
+                            data_quick = stackstac.stack(
+                                scene, 
+                                assets=[conf["assets"][0]], 
+                                bounds_latlon=bbox, 
+                                epsg=epsg_code, 
+                                resolution=calc_resolution,
+                                dtype="float32",  # Menos memoria
+                                fill_value=np.nan
+                            ).squeeze().compute()
+                            
+                            coverage = calculate_data_coverage(data_quick.values, sat_choice)
+                            st.session_state.scene_coverage[scene_id] = round(coverage, 1)
                             
                         except Exception as e:
-                            st.session_state.scene_coverage[scene_id] = 100.0
+                            st.session_state.scene_coverage[scene_id] = 0.0
                     
                     progress_bar.progress((idx + 1) / len(all_scenes))
                 
                 status_text.text("✅ Cálculo completado")
+                progress_bar.empty()
                 st.rerun()
             
             if formato_descarga != "Video MP4":
@@ -398,10 +391,10 @@ if bbox:
                             with st.spinner("Procesando..."):
                                 data_raw = stackstac.stack(item, assets=conf["assets"], bounds_latlon=bbox, epsg=epsg_code, resolution=conf["res"]*2).squeeze().compute()
                                 
-                                # Calcular cobertura si no está calculada
+                                # Calcular cobertura automáticamente al generar preview
                                 if item.id not in st.session_state.scene_coverage:
                                     coverage = calculate_data_coverage(data_raw.sel(band=conf["assets"][0]).values, sat_choice)
-                                    st.session_state.scene_coverage[item.id] = coverage
+                                    st.session_state.scene_coverage[item.id] = round(coverage, 1)
                                 
                                 img_np = np.moveaxis(data_raw.sel(band=conf["assets"][:3]).values, 0, -1)
                                 img = normalize_image_robust(img_np, 2, percentil_alto, conf["scale"], conf["offset"])
@@ -413,6 +406,28 @@ if bbox:
                     if st.session_state.preview_image is not None:
                         caption_text = f"Composición RGB: {idx_name}"
                         st.image(st.session_state.preview_image, use_container_width=True, caption=caption_text)
+                        
+                    # Botón para calcular cobertura de esta escena específica si no existe
+                    if item.id not in st.session_state.scene_coverage and not st.session_state.is_generating_preview:
+                        if st.button("📊 Calcular % Datos (esta imagen)"):
+                            with st.spinner("Calculando..."):
+                                try:
+                                    # Resolución baja para cálculo rápido
+                                    calc_res = conf["res"] * 20 if "Sentinel" in sat_choice else conf["res"] * 10
+                                    data_check = stackstac.stack(
+                                        item, 
+                                        assets=[conf["assets"][0]], 
+                                        bounds_latlon=bbox, 
+                                        epsg=epsg_code, 
+                                        resolution=calc_res,
+                                        dtype="float32",
+                                        fill_value=np.nan
+                                    ).squeeze().compute()
+                                    coverage = calculate_data_coverage(data_check.values, sat_choice)
+                                    st.session_state.scene_coverage[item.id] = round(coverage, 1)
+                                    st.rerun()
+                                except Exception as e:
+                                    st.error(f"Error al calcular: {e}")
 
                 with col_btn2:
                     if st.button("🚀 Descargar HD"):
