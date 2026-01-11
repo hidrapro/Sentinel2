@@ -41,8 +41,6 @@ if "preview_image" not in st.session_state:
     st.session_state.preview_image = None
 if "current_scene_id" not in st.session_state:
     st.session_state.current_scene_id = None
-if "coverage_cache" not in st.session_state:
-    st.session_state.coverage_cache = {}
 
 # --- DICCIONARIO DE CONFIGURACIÓN POR SATÉLITE ---
 SAT_CONFIG = {
@@ -182,52 +180,6 @@ def add_text_to_image(img, text):
     draw.text((x_pos, y_pos), text, fill=(255, 255, 255), font=font)
     return img
 
-def apply_bulk_coverage_filter(items, bbox, epsg_code, asset_key):
-    """Cálculo vectorizado de cobertura ultra-preciso."""
-    needed_ids = [i.id for i in items if i.id not in st.session_state.coverage_cache]
-    
-    if needed_ids:
-        try:
-            needed_items = [i for i in items if i.id in needed_ids]
-            # Resolución de 200m para evitar pérdida de detalle en recortes pequeños
-            # Nearest evita que los píxeles negros se promedien con los válidos
-            ds = stackstac.stack(
-                needed_items, 
-                assets=[asset_key], 
-                bounds_latlon=bbox, 
-                epsg=epsg_code, 
-                resolution=200,
-                dtype="float64",
-                fill_value=0.0,
-                rescale=False,
-                resampling=Resampling.nearest
-            )
-            
-            ds_data = ds.sel(band=asset_key)
-            
-            # Filtro agresivo: considerar nulo todo lo que sea 0 o NaN
-            # y comprobar si hay varianza (si todo es un solo valor plano, es basura)
-            valid_pixels = (ds_data > 1.0) & ds_data.notnull()
-            
-            # Cálculo de promedio de validez
-            coverage_vals = valid_pixels.mean(dim=['x', 'y']).compute().values * 100
-            
-            # Cálculo de varianza para detectar "planos negros"
-            variance_vals = ds_data.std(dim=['x', 'y']).compute().values
-            
-            for i, item_id in enumerate(needed_ids):
-                # Si la cobertura es alta pero la varianza es casi 0, es una imagen fallida
-                if variance_vals[i] < 0.1:
-                    st.session_state.coverage_cache[item_id] = 0.0
-                else:
-                    st.session_state.coverage_cache[item_id] = float(coverage_vals[i])
-        except Exception as e:
-            st.error(f"Error en filtro automático: {e}")
-            for item_id in needed_ids:
-                st.session_state.coverage_cache[item_id] = 100.0
-
-    return [i for i in items if st.session_state.coverage_cache.get(i.id, 0) > 50]
-
 # --- SIDEBAR: CONFIGURACIÓN ---
 with st.sidebar:
     st.subheader("🛰️ Plataforma")
@@ -235,13 +187,7 @@ with st.sidebar:
         c = SAT_CONFIG[key]
         end = "Pres." if c["max_year"] == datetime.now().year else str(c["max_year"])
         return f"{key} ({c['min_year']}-{end})"
-    
-    # Al cambiar de satélite, limpiamos el cache de cobertura
     sat_choice = st.selectbox("Satélite", options=list(SAT_CONFIG.keys()), format_func=sat_label_formatter, label_visibility="collapsed")
-    if "last_sat" not in st.session_state or st.session_state.last_sat != sat_choice:
-        st.session_state.coverage_cache = {}
-        st.session_state.last_sat = sat_choice
-
     conf = SAT_CONFIG[sat_choice]
     
     st.markdown("---")
@@ -272,16 +218,12 @@ with st.sidebar:
     
     # --- SECCIONES COLAPSABLES PARA AHORRAR ESPACIO ---
     if 'scenes_before' in st.session_state and 'scenes_after' in st.session_state:
-        with st.expander("🔍 Filtros de Selección"):
+        with st.expander("🔍 Filtro Manual de Fechas"):
             all_candidates = st.session_state['scenes_before'] + st.session_state['scenes_after']
             all_dates = sorted(list(set([s.datetime.strftime('%d/%m/%Y') for s in all_candidates])))
-            exclude_dates = st.multiselect("Ignorar estas fechas manualmente:", options=all_dates)
-            
-            st.markdown("---")
-            auto_filter = st.checkbox("🧹 Filtro Auto: Datos > 50%", value=False, help="Descarta imágenes con más de la mitad del área sin datos o negra.")
+            exclude_dates = st.multiselect("Ignorar estas fechas:", options=all_dates)
     else:
         exclude_dates = []
-        auto_filter = False
 
     if "Video" in formato_descarga or formato_descarga == "Todos":
         with st.expander("🎬 Configuración Video"):
@@ -337,37 +279,20 @@ if bbox:
                 st.session_state['scenes_before'] = [i for i in all_items if i.datetime < fecha_referencia.replace(tzinfo=i.datetime.tzinfo)]
                 st.session_state['scenes_after'] = [i for i in all_items if i.datetime >= fecha_referencia.replace(tzinfo=i.datetime.tzinfo)]
                 st.session_state.preview_image = None
-                st.session_state.coverage_cache = {} # Resetear cache al buscar nuevo
                 st.rerun()
             else:
                 st.error("No se encontraron imágenes en el área.")
 
     if 'scenes_before' in st.session_state:
         full_pool = st.session_state['scenes_before'] + st.session_state['scenes_after']
-        
-        # --- APLICACIÓN DE FILTRO AUTOMÁTICO VECTORIZADO ---
-        if auto_filter:
-            with st.spinner("Filtrando áreas sin datos..."):
-                full_pool = apply_bulk_coverage_filter(full_pool, bbox, epsg_code, conf["assets"][0])
-
         all_scenes = [s for s in full_pool if s.datetime.strftime('%d/%m/%Y') not in exclude_dates]
         all_scenes.sort(key=lambda x: x.datetime)
         
         if not all_scenes:
-            st.warning("No hay escenas disponibles con los filtros actuales.")
+            st.warning("No hay escenas disponibles.")
         else:
             if formato_descarga != "Video MP4":
-                # Generamos las opciones del selectbox con información de cobertura si está disponible
-                def get_scene_label(s):
-                    date_str = s.datetime.strftime('%d/%m/%Y')
-                    cloud = s.properties[conf['cloud_key']]
-                    cov = st.session_state.coverage_cache.get(s.id, None)
-                    label = f"{date_str} | Nubes: {cloud:.1f}%"
-                    if cov is not None:
-                        label += f" | Datos: {cov:.0f}%"
-                    return label
-
-                scene_opts = {get_scene_label(s): i for i, s in enumerate(all_scenes)}
+                scene_opts = {f"{s.datetime.strftime('%d/%m/%Y')} | Nubes: {s.properties[conf['cloud_key']]:.1f}%": i for i, s in enumerate(all_scenes)}
                 idx_name = st.selectbox("Seleccionar imagen específica:", list(scene_opts.keys()))
                 item = all_scenes[scene_opts[idx_name]]
 
@@ -379,8 +304,6 @@ if bbox:
                     st.write(f"**ID:** `{item.id}`")
                     st.write(f"**Plataforma:** {item.properties.get('platform', 'N/A')}")
                     st.write(f"**Nubes:** {item.properties.get(conf['cloud_key'], 0):.2f}%")
-                    if item.id in st.session_state.coverage_cache:
-                        st.write(f"**Datos útiles en AOI:** {st.session_state.coverage_cache[item.id]:.1f}%")
 
                 col_btn1, col_btn2 = st.columns(2)
                 with col_btn1:
