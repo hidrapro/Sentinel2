@@ -53,7 +53,7 @@ SAT_CONFIG = {
         "res": 10,
         "tile_key": "s2:mgrs_tile",
         "cloud_key": "eo:cloud_cover",
-        "scale": 1.0,
+        "scale": 0.0001,  # Sentinel-2 L2A viene en valores 0-10000, convertir a 0-1
         "offset": 0.0,
         "min_year": 2015,
         "max_year": datetime.now().year
