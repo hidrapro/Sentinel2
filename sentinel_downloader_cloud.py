@@ -30,7 +30,7 @@ st.markdown("""
         margin: 0.5rem 0;
     }
     </style>
-""", unsafe_allow_value=True)
+""", unsafe_allow_html=True)
 
 st.title("🛰️ Visualizador y descarga de recortes")
 
