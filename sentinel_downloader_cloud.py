@@ -209,14 +209,15 @@ st.subheader("1. Área de Interés (AOI)")
 tile_urls = {"OpenStreetMap": "OpenStreetMap", "Satélite (Esri)": "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}", "Topográfico (OpenTopo)": "https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png"}
 m = folium.Map(location=[-35.444, -60.884], zoom_start=13, tiles=tile_urls[map_style] if map_style == "OpenStreetMap" else tile_urls[map_style], attr="Tiles &copy; Esri / OpenTopoMap" if map_style != "OpenStreetMap" else None)
 
-# Configuración mejorada para centrar el mapa obligatoriamente
+# Configuración refinada para centrado absoluto
 LocateControl(
     auto_start=False,
     locateOptions={
         'setView': 'always', 
         'flyTo': True, 
         'maxZoom': 15, 
-        'enableHighAccuracy': True
+        'enableHighAccuracy': True,
+        'padding': [0, 0] # Elimina márgenes que podrían causar el tercio de desplazamiento
     },
     keepCurrentZoomLevel=False,
     returnToPrevBounds=False,
@@ -224,7 +225,9 @@ LocateControl(
 ).add_to(m)
 
 Draw(draw_options={'polyline':False, 'polygon':False, 'circle':False, 'marker':False, 'circlemarker':False, 'rectangle':True}).add_to(m)
-map_data = st_folium(m, width=1200, height=400, key="main_map")
+
+# Uso de use_container_width para corregir el cálculo de centro en Leaflet
+map_data = st_folium(m, use_container_width=True, height=400, key="main_map")
 
 bbox = None
 epsg_code = None
@@ -251,7 +254,6 @@ if bbox:
             if all_items:
                 st.session_state['scenes_before'] = [i for i in all_items if i.datetime < fecha_referencia.replace(tzinfo=i.datetime.tzinfo)]
                 st.session_state['scenes_after'] = [i for i in all_items if i.datetime >= fecha_referencia.replace(tzinfo=i.datetime.tzinfo)]
-                # Limpiar previsualizaciones antiguas al buscar nuevo
                 st.session_state.preview_image = None
                 st.rerun()
             else:
@@ -270,7 +272,6 @@ if bbox:
                 idx_name = st.selectbox("Seleccionar imagen específica:", list(scene_opts.keys()))
                 item = all_scenes[scene_opts[idx_name]]
 
-                # Limpiar imagen previa si cambia la selección de escena
                 if st.session_state.current_scene_id != item.id:
                     st.session_state.preview_image = None
                     st.session_state.current_scene_id = item.id
@@ -284,7 +285,7 @@ if bbox:
 
                 col1, col2 = st.columns(2)
                 with col1:
-                    # Lógica de botón dinámico mejorada con retorno automático de nombre
+                    # Lógica de botón dinámico: cambia nombre y luego lo restaura al finalizar
                     preview_btn_label = "⏳ Generando Imagen..." if st.session_state.is_generating_preview else "🖼️ Vista Previa"
                     if st.button(preview_btn_label):
                         st.session_state.is_generating_preview = True
@@ -296,13 +297,11 @@ if bbox:
                                 data_raw = stackstac.stack(item, assets=conf["assets"], bounds_latlon=bbox, epsg=epsg_code, resolution=conf["res"]*2).squeeze().compute()
                                 img_np = np.moveaxis(data_raw.sel(band=conf["assets"][:3]).values, 0, -1)
                                 img = normalize_image_robust(img_np, percentil_bajo, percentil_alto, conf["scale"], conf["offset"])
-                                # Guardar imagen en estado para persistencia tras el rerun del botón
                                 st.session_state.preview_image = img
                         finally:
                             st.session_state.is_generating_preview = False
-                            st.rerun() # Fuerza el redibujado para que el botón recupere su nombre original
+                            st.rerun() # Esto restaura el nombre del botón a "Vista Previa"
                     
-                    # Mostrar la imagen si existe en el estado de sesión
                     if st.session_state.preview_image is not None:
                         st.image(st.session_state.preview_image, use_container_width=True, caption=f"Composición RGB: {idx_name}")
 
