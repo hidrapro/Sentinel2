@@ -183,44 +183,49 @@ def add_text_to_image(img, text):
     return img
 
 def apply_bulk_coverage_filter(items, bbox, epsg_code, asset_key):
-    """Cálculo vectorizado de cobertura para todo el catálogo de una vez."""
-    # Solo procesamos si hay items nuevos que no estén en cache
+    """Cálculo vectorizado de cobertura ultra-preciso."""
     needed_ids = [i.id for i in items if i.id not in st.session_state.coverage_cache]
     
     if needed_ids:
         try:
             needed_items = [i for i in items if i.id in needed_ids]
-            # Resolución de 500m para mejor detección en recortes pequeños
+            # Resolución de 200m para evitar pérdida de detalle en recortes pequeños
+            # Nearest evita que los píxeles negros se promedien con los válidos
             ds = stackstac.stack(
                 needed_items, 
                 assets=[asset_key], 
                 bounds_latlon=bbox, 
                 epsg=epsg_code, 
-                resolution=500,
-                dtype="float64", # Cambiado a float64 para evitar incompatibilidad con np.nan
-                fill_value=np.nan,
-                rescale=False  # Crucial: evita errores de casteo al no necesitar valores reales
+                resolution=200,
+                dtype="float64",
+                fill_value=0.0,
+                rescale=False,
+                resampling=Resampling.nearest
             )
             
-            # Aseguramos la selección de la banda y limpiamos dimensiones
             ds_data = ds.sel(band=asset_key)
             
-            # Filtro estricto de píxeles: no nulos y con valor mayor a 0 (negro real)
-            valid_mask = ds_data.notnull() & (ds_data > 0)
+            # Filtro agresivo: considerar nulo todo lo que sea 0 o NaN
+            # y comprobar si hay varianza (si todo es un solo valor plano, es basura)
+            valid_pixels = (ds_data > 1.0) & ds_data.notnull()
             
-            # Calculamos promedio espacial (x, y) para obtener % de cobertura útil
-            coverage_array = valid_mask.mean(dim=['x', 'y']).compute().values * 100
+            # Cálculo de promedio de validez
+            coverage_vals = valid_pixels.mean(dim=['x', 'y']).compute().values * 100
             
-            # Mapeo persistente de IDs
+            # Cálculo de varianza para detectar "planos negros"
+            variance_vals = ds_data.std(dim=['x', 'y']).compute().values
+            
             for i, item_id in enumerate(needed_ids):
-                val = coverage_array[i] if coverage_array.ndim > 0 else coverage_array
-                st.session_state.coverage_cache[item_id] = float(val)
+                # Si la cobertura es alta pero la varianza es casi 0, es una imagen fallida
+                if variance_vals[i] < 0.1:
+                    st.session_state.coverage_cache[item_id] = 0.0
+                else:
+                    st.session_state.coverage_cache[item_id] = float(coverage_vals[i])
         except Exception as e:
             st.error(f"Error en filtro automático: {e}")
             for item_id in needed_ids:
                 st.session_state.coverage_cache[item_id] = 100.0
 
-    # Retornamos solo los que tienen más del 50% de datos útiles en la AOI
     return [i for i in items if st.session_state.coverage_cache.get(i.id, 0) > 50]
 
 # --- SIDEBAR: CONFIGURACIÓN ---
@@ -230,7 +235,13 @@ with st.sidebar:
         c = SAT_CONFIG[key]
         end = "Pres." if c["max_year"] == datetime.now().year else str(c["max_year"])
         return f"{key} ({c['min_year']}-{end})"
+    
+    # Al cambiar de satélite, limpiamos el cache de cobertura
     sat_choice = st.selectbox("Satélite", options=list(SAT_CONFIG.keys()), format_func=sat_label_formatter, label_visibility="collapsed")
+    if "last_sat" not in st.session_state or st.session_state.last_sat != sat_choice:
+        st.session_state.coverage_cache = {}
+        st.session_state.last_sat = sat_choice
+
     conf = SAT_CONFIG[sat_choice]
     
     st.markdown("---")
