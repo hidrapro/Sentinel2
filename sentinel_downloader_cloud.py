@@ -41,6 +41,8 @@ if "preview_image" not in st.session_state:
     st.session_state.preview_image = None
 if "current_scene_id" not in st.session_state:
     st.session_state.current_scene_id = None
+if "scene_coverage" not in st.session_state:
+    st.session_state.scene_coverage = {}
 
 # --- DICCIONARIO DE CONFIGURACIÓN POR SATÉLITE ---
 SAT_CONFIG = {
@@ -128,6 +130,19 @@ def get_utm_epsg(lon, lat):
         epsg_code = 32700 + utm_zone
     return epsg_code
 
+def calculate_data_coverage(data_array):
+    """
+    Calcula el porcentaje de píxeles con datos válidos en un array.
+    Retorna el porcentaje de cobertura de datos (0-100).
+    """
+    if data_array is None or data_array.size == 0:
+        return 0.0
+    
+    # Considera como datos válidos los que no son NaN y son mayores a 0
+    valid_data = ~(np.isnan(data_array) | (data_array <= 0))
+    coverage = np.mean(valid_data) * 100
+    return coverage
+
 def normalize_image_robust(img_arr, p_low=2, p_high=98, scale=1.0, offset=0.0):
     """Normalización robusta de imagen con percentiles."""
     img = img_arr * scale + offset
@@ -166,57 +181,40 @@ def add_text_to_image(img, text):
         try:
             font = ImageFont.truetype(path, font_size)
             break
-        except:
-            continue
-    if font is None:
-        font = ImageFont.load_default()
+        except: continue
+    if font is None: font = ImageFont.load_default()
     bbox = draw.textbbox((0, 0), text, font=font)
-    tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
-    padding = int(font_size * 0.2)
-    margin_bottom = int(font_size * 0.3)
-    x_pos = (img.width - tw) // 2
-    y_pos = img.height - th - margin_bottom
-    draw.rectangle([(x_pos - padding, y_pos - padding), (x_pos + tw + padding, y_pos + th + padding)], fill=(0, 0, 0, 180))
-    draw.text((x_pos, y_pos), text, fill=(255, 255, 255), font=font)
+    padding = int(img.width * 0.01)
+    draw.rectangle([padding, padding, bbox[2] - bbox[0] + 3*padding, bbox[3] - bbox[1] + 3*padding], fill=(0, 0, 0, 180))
+    draw.text((2*padding, 2*padding), text, fill=(255, 255, 255), font=font)
     return img
 
-# --- SIDEBAR: CONFIGURACIÓN ---
+# --- BARRA LATERAL ---
 with st.sidebar:
-    st.subheader("🛰️ Plataforma")
-    def sat_label_formatter(key):
-        c = SAT_CONFIG[key]
-        end = "Pres." if c["max_year"] == datetime.now().year else str(c["max_year"])
-        return f"{key} ({c['min_year']}-{end})"
-    sat_choice = st.selectbox("Satélite", options=list(SAT_CONFIG.keys()), format_func=sat_label_formatter, label_visibility="collapsed")
+    st.header("Parámetros")
+    sat_choice = st.selectbox("Satélite:", list(SAT_CONFIG.keys()))
     conf = SAT_CONFIG[sat_choice]
     
-    st.markdown("---")
-    st.subheader("📅 Tiempo y Nubes")
-    meses = ["Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio", "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"]
-    c1, c2 = st.columns(2)
-    with c1:
-        mes_nombre = st.selectbox("Mes", meses, index=datetime.now().month - 1)
-    with c2:
-        anio = st.number_input("Año", min_value=conf["min_year"], max_value=conf["max_year"], value=conf["max_year"])
+    fecha_referencia = st.date_input("Fecha de referencia:", datetime.now().date(), 
+                                     min_value=datetime(conf["min_year"], 1, 1).date(), 
+                                     max_value=datetime(conf["max_year"], 12, 31).date())
+    fecha_referencia = datetime.combine(fecha_referencia, datetime.min.time())
     
-    mes_num = meses.index(mes_nombre) + 1
-    fecha_referencia = datetime(anio, mes_num, 1)
+    st.divider()
+    max_cloud = st.slider("Máx. Nubes (%):", 0, 100, 20)
+    percentil_alto = st.slider("Percentil alto normalización:", 90, 100, 98)
+    res_final = st.number_input("Resolución descarga (m):", 10, 120, conf["res"], step=10)
     
-    max_cloud = st.slider("Nubosidad máx. (%)", 0, 100, 15)
+    st.divider()
+    map_style = st.selectbox("Estilo mapa:", ["OpenStreetMap", "Satélite (Esri)", "Topográfico (OpenTopo)"])
+    formato_descarga = st.selectbox("Formato descarga:", ["GeoTIFF", "JPG", "Video MP4", "Todos"])
     
-    st.markdown("---")
-    st.subheader("⚙️ Salida")
-    map_style = st.selectbox("Estilo Mapa", ["OpenStreetMap", "Satélite (Esri)", "Topográfico (OpenTopo)"])
+    # NUEVA OPCIÓN: Calcular cobertura automáticamente
+    st.divider()
+    auto_calculate_coverage = st.checkbox("Calcular % datos automáticamente", value=False, 
+                                          help="Calcula el porcentaje de datos válidos para cada escena (puede tomar tiempo)")
     
-    c3, c4 = st.columns([1, 1])
-    with c3:
-        res_final = st.number_input("Res. (m)", value=conf["res"], min_value=10)
-    with c4:
-        percentil_alto = st.number_input("% Alto", value=98, min_value=50, max_value=100)
-    
-    formato_descarga = st.radio("Formato de descarga:", ["GeoTIFF (GIS)", "JPG (Visual)", "Video MP4", "Todos"], horizontal=True)
-    
-    # --- SECCIONES COLAPSABLES PARA AHORRAR ESPACIO ---
+    exclude_dates = []
     if 'scenes_before' in st.session_state and 'scenes_after' in st.session_state:
         with st.expander("🔍 Filtro Manual de Fechas"):
             all_candidates = st.session_state['scenes_before'] + st.session_state['scenes_after']
@@ -279,6 +277,7 @@ if bbox:
                 st.session_state['scenes_before'] = [i for i in all_items if i.datetime < fecha_referencia.replace(tzinfo=i.datetime.tzinfo)]
                 st.session_state['scenes_after'] = [i for i in all_items if i.datetime >= fecha_referencia.replace(tzinfo=i.datetime.tzinfo)]
                 st.session_state.preview_image = None
+                st.session_state.scene_coverage = {}  # Limpiar coverages previos
                 st.rerun()
             else:
                 st.error("No se encontraron imágenes en el área.")
@@ -291,8 +290,47 @@ if bbox:
         if not all_scenes:
             st.warning("No hay escenas disponibles.")
         else:
+            # NUEVA FUNCIONALIDAD: Calcular cobertura de datos si está habilitado
+            if auto_calculate_coverage and st.button("📊 Calcular % de Datos"):
+                progress_bar = st.progress(0)
+                status_text = st.empty()
+                
+                for idx, scene in enumerate(all_scenes):
+                    scene_id = scene.id
+                    if scene_id not in st.session_state.scene_coverage:
+                        try:
+                            status_text.text(f"Calculando escena {idx + 1}/{len(all_scenes)}: {scene.datetime.strftime('%d/%m/%Y')}")
+                            # Usar resolución baja para cálculo rápido
+                            data_quick = stackstac.stack(scene, assets=[conf["assets"][0]], 
+                                                        bounds_latlon=bbox, epsg=epsg_code, 
+                                                        resolution=conf["res"]*4).squeeze().compute()
+                            coverage = calculate_data_coverage(data_quick.values)
+                            st.session_state.scene_coverage[scene_id] = coverage
+                        except Exception as e:
+                            st.session_state.scene_coverage[scene_id] = 0.0
+                    
+                    progress_bar.progress((idx + 1) / len(all_scenes))
+                
+                status_text.text("✅ Cálculo completado")
+                st.rerun()
+            
             if formato_descarga != "Video MP4":
-                scene_opts = {f"{s.datetime.strftime('%d/%m/%Y')} | Nubes: {s.properties[conf['cloud_key']]:.1f}%": i for i, s in enumerate(all_scenes)}
+                # Crear opciones del selectbox con información de cobertura
+                scene_opts = {}
+                for i, s in enumerate(all_scenes):
+                    date_str = s.datetime.strftime('%d/%m/%Y')
+                    cloud_str = f"Nubes: {s.properties[conf['cloud_key']]:.1f}%"
+                    
+                    # Agregar información de cobertura si está disponible
+                    if s.id in st.session_state.scene_coverage:
+                        coverage = st.session_state.scene_coverage[s.id]
+                        coverage_str = f" | Datos: {coverage:.1f}%"
+                        label = f"{date_str} | {cloud_str}{coverage_str}"
+                    else:
+                        label = f"{date_str} | {cloud_str}"
+                    
+                    scene_opts[label] = i
+                
                 idx_name = st.selectbox("Seleccionar imagen específica:", list(scene_opts.keys()))
                 item = all_scenes[scene_opts[idx_name]]
 
@@ -304,6 +342,8 @@ if bbox:
                     st.write(f"**ID:** `{item.id}`")
                     st.write(f"**Plataforma:** {item.properties.get('platform', 'N/A')}")
                     st.write(f"**Nubes:** {item.properties.get(conf['cloud_key'], 0):.2f}%")
+                    if item.id in st.session_state.scene_coverage:
+                        st.write(f"**Cobertura de datos:** {st.session_state.scene_coverage[item.id]:.2f}%")
 
                 col_btn1, col_btn2 = st.columns(2)
                 with col_btn1:
@@ -316,6 +356,12 @@ if bbox:
                         try:
                             with st.spinner("Procesando..."):
                                 data_raw = stackstac.stack(item, assets=conf["assets"], bounds_latlon=bbox, epsg=epsg_code, resolution=conf["res"]*2).squeeze().compute()
+                                
+                                # Calcular cobertura si no está calculada
+                                if item.id not in st.session_state.scene_coverage:
+                                    coverage = calculate_data_coverage(data_raw.sel(band=conf["assets"][0]).values)
+                                    st.session_state.scene_coverage[item.id] = coverage
+                                
                                 img_np = np.moveaxis(data_raw.sel(band=conf["assets"][:3]).values, 0, -1)
                                 img = normalize_image_robust(img_np, 2, percentil_alto, conf["scale"], conf["offset"])
                                 st.session_state.preview_image = img
@@ -324,7 +370,8 @@ if bbox:
                             st.rerun()
                     
                     if st.session_state.preview_image is not None:
-                        st.image(st.session_state.preview_image, use_container_width=True, caption=f"Composición RGB: {idx_name}")
+                        caption_text = f"Composición RGB: {idx_name}"
+                        st.image(st.session_state.preview_image, use_container_width=True, caption=caption_text)
 
                 with col_btn2:
                     if st.button("🚀 Descargar HD"):
@@ -359,7 +406,13 @@ if bbox:
                                 status.update(label=f"Frame {processed + 1}: {date_str}...")
                                 data_f = stackstac.stack(s, assets=conf["assets"], bounds_latlon=bbox, epsg=epsg_code, resolution=conf["res"]*2).squeeze().compute()
                                 check_np = data_f.sel(band=conf["assets"][0]).values
-                                if np.mean(np.isnan(check_np) | (check_np <= 0)) > 0.20: continue
+                                
+                                # Calcular y guardar cobertura
+                                coverage = calculate_data_coverage(check_np)
+                                st.session_state.scene_coverage[s.id] = coverage
+                                
+                                if coverage < 80: continue  # Saltar si menos del 80% tiene datos
+                                
                                 img_np = np.moveaxis(data_f.sel(band=conf["assets"][:3]).values, 0, -1)
                                 img_8bit = normalize_image_robust(img_np, 2, percentil_alto, conf["scale"], conf["offset"])
                                 pil_img = Image.fromarray(img_8bit)
