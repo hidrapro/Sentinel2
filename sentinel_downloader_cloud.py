@@ -190,32 +190,37 @@ def apply_bulk_coverage_filter(items, bbox, epsg_code, asset_key):
     if needed_ids:
         try:
             needed_items = [i for i in items if i.id in needed_ids]
-            # Usamos una resolución muy baja (1000m) para que sea instantáneo
+            # Resolución muy baja para rapidez (1500m)
             ds = stackstac.stack(
                 needed_items, 
                 assets=[asset_key], 
                 bounds_latlon=bbox, 
                 epsg=epsg_code, 
-                resolution=1000
-            ).squeeze()
+                resolution=1500
+            )
             
-            # Calculamos la cobertura para todo el cubo de tiempo a la vez
-            # valid_mask: True si hay datos (no NaN y > 0)
-            valid_mask = (~np.isnan(ds)) & (ds > 0)
-            # Promedio sobre las dimensiones espaciales (x, y)
+            # Asegurar que seleccionamos la banda correcta y eliminamos dimensiones extra de forma segura
+            ds_data = ds.sel(band=asset_key)
+            
+            # Filtro estricto: Considerar No Data si es NaN o valores negros menores a 1 (offset)
+            # Muchos sensores usan valores muy bajos como 'fill'
+            valid_mask = ds_data.notnull() & (ds_data > 0)
+            
+            # Computar el promedio espacial para cada paso de tiempo
             coverage_array = valid_mask.mean(dim=['x', 'y']).compute().values * 100
             
-            # Guardamos en cache
+            # Guardar en cache mapeando ID -> Valor
             for i, item_id in enumerate(needed_ids):
-                st.session_state.coverage_cache[item_id] = float(coverage_array[i])
+                # Si el array es 2D (time, band), tomamos el primer elemento si es necesario
+                val = coverage_array[i] if coverage_array.ndim == 1 else coverage_array[i, 0]
+                st.session_state.coverage_cache[item_id] = float(val)
         except Exception as e:
             st.error(f"Error en filtro automático: {e}")
-            # En caso de error, asumimos cobertura 100 para no borrar nada
             for item_id in needed_ids:
                 st.session_state.coverage_cache[item_id] = 100.0
 
-    # Retornamos solo los que pasan el filtro (más del 50% de datos)
-    return [i for i in items if st.session_state.coverage_cache.get(i.id, 0) >= 50]
+    # Retornamos solo los que pasan el filtro (más del 50% de datos útiles)
+    return [i for i in items if st.session_state.coverage_cache.get(i.id, 0) > 50]
 
 # --- SIDEBAR: CONFIGURACIÓN ---
 with st.sidebar:
@@ -261,7 +266,7 @@ with st.sidebar:
             exclude_dates = st.multiselect("Ignorar estas fechas manualmente:", options=all_dates)
             
             st.markdown("---")
-            auto_filter = st.checkbox("🧹 Filtro Auto: Datos > 50%", value=False, help="Estrategia vectorizada: detecta y elimina áreas negras de todo el catálogo eficientemente.")
+            auto_filter = st.checkbox("🧹 Filtro Auto: Datos > 50%", value=False, help="Descarta imágenes con más de la mitad del área sin datos o negra.")
     else:
         exclude_dates = []
         auto_filter = False
@@ -330,17 +335,27 @@ if bbox:
         
         # --- APLICACIÓN DE FILTRO AUTOMÁTICO VECTORIZADO ---
         if auto_filter:
-            with st.spinner("Optimizando catálogo (Cálculo vectorizado)..."):
+            with st.spinner("Filtrando áreas sin datos..."):
                 full_pool = apply_bulk_coverage_filter(full_pool, bbox, epsg_code, conf["assets"][0])
 
         all_scenes = [s for s in full_pool if s.datetime.strftime('%d/%m/%Y') not in exclude_dates]
         all_scenes.sort(key=lambda x: x.datetime)
         
         if not all_scenes:
-            st.warning("No hay escenas disponibles (filtros aplicados).")
+            st.warning("No hay escenas disponibles con los filtros actuales.")
         else:
             if formato_descarga != "Video MP4":
-                scene_opts = {f"{s.datetime.strftime('%d/%m/%Y')} | Nubes: {s.properties[conf['cloud_key']]:.1f}%": i for i, s in enumerate(all_scenes)}
+                # Generamos las opciones del selectbox con información de cobertura si está disponible
+                def get_scene_label(s):
+                    date_str = s.datetime.strftime('%d/%m/%Y')
+                    cloud = s.properties[conf['cloud_key']]
+                    cov = st.session_state.coverage_cache.get(s.id, None)
+                    label = f"{date_str} | Nubes: {cloud:.1f}%"
+                    if cov is not None:
+                        label += f" | Datos: {cov:.0f}%"
+                    return label
+
+                scene_opts = {get_scene_label(s): i for i, s in enumerate(all_scenes)}
                 idx_name = st.selectbox("Seleccionar imagen específica:", list(scene_opts.keys()))
                 item = all_scenes[scene_opts[idx_name]]
 
