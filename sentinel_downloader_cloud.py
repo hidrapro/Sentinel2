@@ -29,6 +29,15 @@ st.markdown("""
     [data-testid="stSidebar"] hr {
         margin: 0.5rem 0;
     }
+    /* Reducir padding superior de la app */
+    .block-container {
+        padding-top: 1rem;
+    }
+    /* Hacer el título más pequeño */
+    h1 {
+        font-size: 1.8rem !important;
+        margin-bottom: 0.5rem !important;
+    }
     </style>
 """, unsafe_allow_html=True)
 
@@ -238,6 +247,7 @@ with st.sidebar:
 
 # --- MAPA ---
 st.subheader("1. Área de Interés (AOI)")
+st.caption("📍 Haga clic en el ícono cuadrado ▢ y marque su área de interés")
 tile_urls = {"OpenStreetMap": "OpenStreetMap", "Satélite (Esri)": "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}", "Topográfico (OpenTopo)": "https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png"}
 m = folium.Map(location=[-35.444, -60.884], zoom_start=13, tiles=tile_urls[map_style] if map_style == "OpenStreetMap" else tile_urls[map_style], attr="Tiles &copy; Esri / OpenTopoMap" if map_style != "OpenStreetMap" else None)
 
