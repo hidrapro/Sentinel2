@@ -224,7 +224,13 @@ def add_text_to_image(img, text):
 # --- SIDEBAR ---
 with st.sidebar:
     st.subheader("🛰️ Plataforma")
-    sat_choice = st.selectbox("Satélite", options=list(SAT_CONFIG.keys()), label_visibility="collapsed")
+    # MODIFICACIÓN: Se agrega el periodo de tiempo al lado del nombre en el selectbox
+    sat_choice = st.selectbox(
+        "Satélite", 
+        options=list(SAT_CONFIG.keys()), 
+        label_visibility="collapsed",
+        format_func=lambda x: f"{x} ({SAT_CONFIG[x]['min_year']} - {SAT_CONFIG[x]['max_year']})"
+    )
     conf = SAT_CONFIG[sat_choice]
     
     st.markdown("---")
@@ -258,6 +264,8 @@ with st.sidebar:
         with st.expander("🎬 Configuración Video"):
             video_fps = st.slider("FPS", 1, 5, 2)
             video_max_images = st.slider("Máx. frames", 3, 30, 15)
+            # NUEVO: Slider para filtro de No-Data en video
+            video_max_nodata = st.slider("Máx. Sin Datos (%)", 0, 40, 5)
 
 # --- MAPA ---
 st.subheader("1. Área de Interés (AOI)")
@@ -296,7 +304,7 @@ if bbox:
         try:
             catalog = pystac_client.Client.open("https://planetarycomputer.microsoft.com/api/stac/v1", modifier=planetary_computer.sign_inplace)
             query_params = {conf["cloud_key"]: {"lt": max_cloud}}
-            if conf["platform"]: query_params["platform"] = {"in": conf["platform"]}
+            if pool_val := conf.get("platform"): query_params["platform"] = {"in": pool_val}
             common_args = {"collections": [conf["collection"]], "bbox": bbox, "query": query_params}
             fecha_inicio, fecha_fin = fecha_referencia - timedelta(days=365), fecha_referencia + timedelta(days=365)
             
@@ -405,35 +413,44 @@ if bbox:
                 if st.button("🎬 Generar Video MP4"):
                     st.session_state.video_result = None
                     frames_list = []
+                    
+                    # Orden inicial: Cercanía a fecha de referencia y nubosidad
                     pool = sorted(all_scenes, key=lambda x: (abs((x.datetime.replace(tzinfo=None) - fecha_referencia).days), x.properties[conf['cloud_key']]))
-                    with st.status("Generando frames...") as status:
-                        processed = 0
-                        for s in pool:
-                            if processed >= video_max_images: break
-                            try:
-                                data_f = stackstac.stack(s, assets=conf["assets"], bounds_latlon=bbox, epsg=epsg_code, resolution=conf["res"]*2).squeeze().compute()
-                                img_np = np.moveaxis(data_f.sel(band=conf["assets"][:3]).values, 0, -1)
-                                img_8bit = normalize_image_robust(img_np, 2, percentil_alto, conf["scale"], conf["offset"])
-                                pil_img = Image.fromarray(img_8bit)
-                                target_w = 1000
-                                h_res = int(pil_img.height * (target_w / pil_img.width))
-                                pil_img = pil_img.resize((target_w, h_res), Image.Resampling.LANCZOS)
-                                frames_list.append((s.datetime, add_text_to_image(pil_img, s.datetime.strftime('%d/%m/%Y'))))
-                                processed += 1
-                            except: continue
-                        
-                        if frames_list:
-                            status.update(label="Ensamblando Video...", state="running")
-                            frames_list.sort(key=lambda x: x[0])
-                            images_only = [np.array(f[1]) for f in frames_list]
-                            with tempfile.NamedTemporaryFile(suffix='.mp4', delete=False) as tmp:
-                                writer = imageio.get_writer(tmp.name, fps=video_fps, codec='libx264', quality=8)
-                                for f in images_only: writer.append_data(f)
-                                writer.close()
-                                with open(tmp.name, 'rb') as f: 
-                                    st.session_state.video_result = f.read()
-                            status.update(label="✅ Video generado correctamente", state="complete")
-                            st.rerun()
+                    
+                    # MODIFICACIÓN: Filtrar por el % máximo de Sin Datos configurado en el slider
+                    pool = [s for s in pool if s.properties.get("custom_nodata_pct", 0.0) <= video_max_nodata]
+                    
+                    if not pool:
+                        st.error(f"No hay imágenes que cumplan con el filtro de Sin Datos (Máx: {video_max_nodata}%). Prueba subiendo el umbral.")
+                    else:
+                        with st.status("Generando frames...") as status:
+                            processed = 0
+                            for s in pool:
+                                if processed >= video_max_images: break
+                                try:
+                                    data_f = stackstac.stack(s, assets=conf["assets"], bounds_latlon=bbox, epsg=epsg_code, resolution=conf["res"]*2).squeeze().compute()
+                                    img_np = np.moveaxis(data_f.sel(band=conf["assets"][:3]).values, 0, -1)
+                                    img_8bit = normalize_image_robust(img_np, 2, percentil_alto, conf["scale"], conf["offset"])
+                                    pil_img = Image.fromarray(img_8bit)
+                                    target_w = 1000
+                                    h_res = int(pil_img.height * (target_w / pil_img.width))
+                                    pil_img = pil_img.resize((target_w, h_res), Image.Resampling.LANCZOS)
+                                    frames_list.append((s.datetime, add_text_to_image(pil_img, s.datetime.strftime('%d/%m/%Y'))))
+                                    processed += 1
+                                except: continue
+                            
+                            if frames_list:
+                                status.update(label="Ensamblando Video...", state="running")
+                                frames_list.sort(key=lambda x: x[0])
+                                images_only = [np.array(f[1]) for f in frames_list]
+                                with tempfile.NamedTemporaryFile(suffix='.mp4', delete=False) as tmp:
+                                    writer = imageio.get_writer(tmp.name, fps=video_fps, codec='libx264', quality=8)
+                                    for f in images_only: writer.append_data(f)
+                                    writer.close()
+                                    with open(tmp.name, 'rb') as f: 
+                                        st.session_state.video_result = f.read()
+                                status.update(label="✅ Video generado correctamente", state="complete")
+                                st.rerun()
 
                 if st.session_state.video_result is not None:
                     st.success("🎞️ Video listo para visualizar:")
