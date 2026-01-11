@@ -19,47 +19,79 @@ import imageio
 # --- CONFIGURACIÓN DE PÁGINA ---
 st.set_page_config(page_title="Satelites LandSat y Sentinel 2", layout="wide", page_icon="🛰️")
 
-# --- CSS PARA AJUSTES DE UI Y POSICIÓN ---
+# --- CSS PARA MAXIMIZAR COMPACIDAD ---
 st.markdown("""
     <style>
-    /* Mover el contenido hacia arriba */
+    /* Reducir márgenes del contenedor principal */
     .block-container {
-        padding-top: 1rem !important;
+        padding-top: 0.5rem !important;
         padding-bottom: 0rem !important;
+        padding-left: 1rem !important;
+        padding-right: 1rem !important;
     }
-    /* Reducir tamaño del título y quitar margen superior */
+    
+    /* Títulos y encabezados ultra compactos */
     h1 {
-        font-size: 1.8rem !important;
-        margin-top: -2rem !important;
-        margin-bottom: 1rem !important;
+        font-size: 1.5rem !important;
+        margin-top: -2.5rem !important;
+        margin-bottom: 0.5rem !important;
+        padding-bottom: 0 !important;
     }
+    h2, h3 {
+        margin-top: 0.2rem !important;
+        margin-bottom: 0.2rem !important;
+        font-size: 1.1rem !important;
+    }
+    
+    /* Reducir espacio entre widgets (Vertical Block Gap) */
+    [data-testid="stVerticalBlock"] {
+        gap: 0.2rem !important;
+    }
+    
+    /* Reducir márgenes de cada elemento individual */
+    div.stElementContainer {
+        margin-bottom: 0.1rem !important;
+    }
+    
+    /* Compactar la barra lateral */
     [data-testid="stSidebar"] [data-testid="stVerticalBlock"] {
-        gap: 0.5rem;
-        padding-top: 1rem;
+        gap: 0.3rem !important;
+        padding-top: 0.5rem !important;
     }
     [data-testid="stSidebar"] hr {
-        margin: 0.5rem 0;
+        margin: 0.3rem 0 !important;
     }
+    
+    /* Reducir interlineado en textos y párrafos */
+    div[data-testid="stMarkdownContainer"] p {
+        margin-bottom: 0.1rem !important;
+        line-height: 1.2 !important;
+    }
+
     .result-text {
         display: flex;
         align-items: center;
         height: 100%;
         font-weight: bold;
         color: #2e7d32;
+        font-size: 0.9rem;
     }
+    
     .instruction-text {
         color: #555;
         font-style: italic;
-        margin-bottom: 10px;
+        margin-bottom: 5px;
         display: block;
+        font-size: 0.85rem;
     }
-    /* Efecto de foco/pulso para el botón de búsqueda */
+    
     .highlight-search {
         border: 2px solid #2e7d32;
         border-radius: 8px;
-        padding: 2px;
+        padding: 1px;
         animation: pulse-green 2s infinite;
     }
+    
     @keyframes pulse-green {
         0% { box-shadow: 0 0 0 0 rgba(46, 125, 50, 0.7); }
         70% { box-shadow: 0 0 0 10px rgba(46, 125, 50, 0); }
@@ -169,14 +201,11 @@ def get_utm_epsg(lon, lat):
 def check_nodata_fast(item, bbox, epsg, asset_name):
     """Calcula el % de pixeles negros/sin datos en el recorte exacto"""
     try:
-        # Estimamos una resolución que nos dé unos 50x50 píxeles para el chequeo rápido
-        # para evitar errores en áreas muy pequeñas o muy grandes.
         width_m = (bbox[2] - bbox[0]) * 111320 * np.cos(np.radians(bbox[1]))
         res_check = max(10, width_m / 50) 
         
         ds = stackstac.stack(item, assets=[asset_name], bounds_latlon=bbox, epsg=epsg, resolution=res_check).squeeze().compute()
         data = ds.values
-        # Consideramos 0, valores negativos (comunes en Landsat escalado) y NaNs como Sin Datos
         nodata_mask = (data <= 0) | np.isnan(data)
         percentage = (np.sum(nodata_mask) / data.size) * 100
         return float(percentage)
@@ -242,8 +271,6 @@ with st.sidebar:
     mes_num = meses.index(mes_nombre) + 1
     fecha_referencia = datetime(anio, mes_num, 1)
     max_cloud = st.slider("Nubosidad máx. (%)", 0, 100, 15)
-    
-    # Slider para cantidad de imágenes a buscar
     max_search_items = st.slider("Imágenes a buscar", 10, 60, 20)
     
     st.markdown("---")
@@ -266,7 +293,6 @@ with st.sidebar:
         with st.expander("🎬 Configuración Video"):
             video_fps = st.slider("FPS", 1, 5, 2)
             video_max_images = st.slider("Máx. frames", 3, 30, 15)
-            # Slider para filtro de No-Data en video
             video_max_nodata = st.slider("Máx. Sin Datos (%)", 0, 40, 5)
 
 # --- MAPA ---
@@ -289,13 +315,13 @@ if map_data and map_data.get('all_drawings'):
 # --- LÓGICA DE BÚSQUEDA ---
 if bbox:
     if st.session_state.search_count is None and not st.session_state.searching:
-        st.success("✅ ¡Área seleccionada! Haz clic en el botón inferior para buscar imágenes.")
+        st.success("✅ ¡Área seleccionada! Haz clic abajo para buscar.")
     
     col_btn, col_count = st.columns([0.2, 0.8])
     with col_btn:
         needs_highlight = st.session_state.search_count is None and not st.session_state.searching
         if needs_highlight: st.markdown('<div class="highlight-search">', unsafe_allow_html=True)
-        btn_text = "Buscando Imagenes" if st.session_state.searching else "🔍 Buscar Imágenes"
+        btn_text = "Buscando..." if st.session_state.searching else "🔍 Buscar Imágenes"
         if st.button(btn_text, disabled=st.session_state.searching, use_container_width=True):
             st.session_state.searching = True
             st.session_state.video_result = None
@@ -305,71 +331,52 @@ if bbox:
     if st.session_state.searching:
         try:
             catalog = pystac_client.Client.open("https://planetarycomputer.microsoft.com/api/stac/v1", modifier=planetary_computer.sign_inplace)
-            
-            # Dividimos la búsqueda en dos para centrarla en la fecha de referencia
             half_items = max_search_items // 2
-            
             query_params = {conf["cloud_key"]: {"lt": max_cloud}}
             if pool_val := conf.get("platform"): query_params["platform"] = {"in": pool_val}
-            
-            # Rango de búsqueda amplio (1 año hacia atrás y 1 año hacia adelante)
             f_past_start = fecha_referencia - timedelta(days=365)
             f_future_end = fecha_referencia + timedelta(days=365)
 
-            # Búsqueda 1: Pasado (orden descendente para traer las más cercanas a la fecha)
             search_past = catalog.search(
-                collections=[conf["collection"]],
-                bbox=bbox,
+                collections=[conf["collection"]], bbox=bbox,
                 datetime=f"{f_past_start.isoformat()}/{fecha_referencia.isoformat()}",
-                query=query_params,
-                sortby=[{"field": "properties.datetime", "direction": "desc"}],
+                query=query_params, sortby=[{"field": "properties.datetime", "direction": "desc"}],
                 max_items=half_items
             )
-            
-            # Búsqueda 2: Futuro (orden ascendente para traer las más cercanas a la fecha)
             search_future = catalog.search(
-                collections=[conf["collection"]],
-                bbox=bbox,
+                collections=[conf["collection"]], bbox=bbox,
                 datetime=f"{fecha_referencia.isoformat()}/{f_future_end.isoformat()}",
-                query=query_params,
-                sortby=[{"field": "properties.datetime", "direction": "asc"}],
+                query=query_params, sortby=[{"field": "properties.datetime", "direction": "asc"}],
                 max_items=max_search_items - half_items
             )
             
             all_items = list(search_past.items()) + list(search_future.items())
-            
             if all_items:
-                # ESTRATEGIA: Analizar píxeles reales de cada imagen encontrada
-                with st.status("Analizando cobertura real de datos...") as status:
+                with st.status("Analizando cobertura...") as status:
                     for i, item in enumerate(all_items):
-                        status.update(label=f"Chequeando imagen {i+1}/{len(all_items)}...")
+                        status.update(label=f"Chequeando {i+1}/{len(all_items)}...")
                         check_asset = "B04" if "sentinel" in conf["collection"] else "red"
-                        if check_asset not in item.assets:
-                            check_asset = list(item.assets.keys())[0]
-                        
+                        if check_asset not in item.assets: check_asset = list(item.assets.keys())[0]
                         pct = check_nodata_fast(item, bbox, epsg_code, check_asset)
                         item.properties["custom_nodata_pct"] = pct
-
-                # Separamos y guardamos en el estado
                 st.session_state['scenes_before'] = [i for i in all_items if i.datetime.replace(tzinfo=None) < fecha_referencia]
                 st.session_state['scenes_after'] = [i for i in all_items if i.datetime.replace(tzinfo=None) >= fecha_referencia]
                 st.session_state.search_count = len(all_items)
             else:
                 st.session_state.search_count = 0
         except Exception as e:
-            st.error(f"Error en la búsqueda: {e}")
+            st.error(f"Error: {e}")
             st.session_state.search_count = 0
         finally:
             st.session_state.searching = False
-            st.session_state.preview_image = None
             st.rerun()
 
     if st.session_state.search_count is not None:
         with col_count:
             if st.session_state.search_count > 0:
-                st.markdown(f'<div class="result-text">✨ Se encontraron {st.session_state.search_count} imágenes equilibradas alrededor de la fecha</div>', unsafe_allow_html=True)
+                st.markdown(f'<div class="result-text">✨ {st.session_state.search_count} imágenes equilibradas encontradas.</div>', unsafe_allow_html=True)
             else:
-                st.markdown('<div class="result-text" style="color:red">No se encontraron resultados en el rango seleccionado.</div>', unsafe_allow_html=True)
+                st.markdown('<div class="result-text" style="color:red">Sin resultados en el rango.</div>', unsafe_allow_html=True)
 
     # --- DESPLIEGUE DE RESULTADOS ---
     if 'scenes_before' in st.session_state:
@@ -384,16 +391,12 @@ if bbox:
                     pct_val = s.properties.get("custom_nodata_pct", 0.0)
                     date_str = s.datetime.strftime('%d/%m/%Y')
                     clouds = s.properties[conf['cloud_key']]
-                    
                     label = f"📅 {date_str} | ☁️ {clouds:.1f}% | ⬛ Sin Datos: {pct_val:.1f}%"
-                    if pct_val > 5.0:
-                        label += " ⚠️ (IMAGEN PARCIAL)"
-                    
+                    if pct_val > 5.0: label += " ⚠️"
                     scene_opts[label] = i
                 
-                idx_name = st.selectbox("Seleccionar imagen específica:", list(scene_opts.keys()))
+                idx_name = st.selectbox("Imagen específica:", list(scene_opts.keys()))
                 item = all_scenes[scene_opts[idx_name]]
-
                 if st.session_state.current_scene_id != item.id:
                     st.session_state.preview_image = None
                     st.session_state.current_scene_id = item.id
@@ -403,23 +406,21 @@ if bbox:
                     if st.button("🖼️ Vista Previa", disabled=st.session_state.is_generating_preview):
                         st.session_state.is_generating_preview = True
                         st.rerun()
-                    
                     if st.session_state.is_generating_preview:
                         try:
-                            with st.spinner("Procesando vista previa..."):
+                            with st.spinner("Procesando..."):
                                 data_raw = stackstac.stack(item, assets=conf["assets"], bounds_latlon=bbox, epsg=epsg_code, resolution=conf["res"]*2).squeeze().compute()
                                 img_np = np.moveaxis(data_raw.sel(band=conf["assets"][:3]).values, 0, -1)
                                 st.session_state.preview_image = normalize_image_robust(img_np, 2, percentil_alto, conf["scale"], conf["offset"])
                         finally:
                             st.session_state.is_generating_preview = False
                             st.rerun()
-                    
                     if st.session_state.preview_image is not None:
-                        st.image(st.session_state.preview_image, use_container_width=True, caption=f"Composición RGB: {idx_name}")
+                        st.image(st.session_state.preview_image, use_container_width=True)
 
                 with col_btn2:
                     if st.button("🚀 Descargar HD"):
-                        with st.status("Preparando archivos HD..."):
+                        with st.status("Preparando HD..."):
                             data_raw = stackstac.stack(item, assets=conf["assets"], bounds_latlon=bbox, epsg=epsg_code, resolution=res_final).squeeze()
                             data_final = data_raw.sel(band=conf["assets"][:3])
                             fname = f"{sat_choice.replace(' ', '_')}_{item.datetime.strftime('%Y%m%d')}"
@@ -438,15 +439,10 @@ if bbox:
                 if st.button("🎬 Generar Video MP4"):
                     st.session_state.video_result = None
                     frames_list = []
-                    
-                    # El pool ya viene equilibrado de la búsqueda
-                    pool = sorted(all_scenes, key=lambda x: x.datetime)
-                    
-                    # Filtrar por el % máximo de Sin Datos configurado en el slider
-                    pool = [s for s in pool if s.properties.get("custom_nodata_pct", 0.0) <= video_max_nodata]
+                    pool = [s for s in sorted(all_scenes, key=lambda x: x.datetime) if s.properties.get("custom_nodata_pct", 0.0) <= video_max_nodata]
                     
                     if not pool:
-                        st.error(f"No hay imágenes que cumplan con el filtro de Sin Datos (Máx: {video_max_nodata}%). Prueba subiendo el umbral.")
+                        st.error(f"Sin imágenes que cumplan (Máx: {video_max_nodata}%).")
                     else:
                         with st.status("Generando frames...") as status:
                             processed = 0
@@ -465,22 +461,20 @@ if bbox:
                                 except: continue
                             
                             if frames_list:
-                                status.update(label="Ensamblando Video...", state="running")
+                                status.update(label="Ensamblando...", state="running")
                                 frames_list.sort(key=lambda x: x[0])
                                 images_only = [np.array(f[1]) for f in frames_list]
                                 with tempfile.NamedTemporaryFile(suffix='.mp4', delete=False) as tmp:
                                     writer = imageio.get_writer(tmp.name, fps=video_fps, codec='libx264', quality=8)
                                     for f in images_only: writer.append_data(f)
                                     writer.close()
-                                    with open(tmp.name, 'rb') as f: 
-                                        st.session_state.video_result = f.read()
-                                status.update(label="✅ Video generado correctamente", state="complete")
+                                    with open(tmp.name, 'rb') as f: st.session_state.video_result = f.read()
+                                status.update(label="✅ Éxito", state="complete")
                                 st.rerun()
 
                 if st.session_state.video_result is not None:
-                    st.success("🎞️ Video listo para visualizar:")
                     st.video(st.session_state.video_result, autoplay=True)
-                    st.download_button("📥 Descargar Video MP4", st.session_state.video_result, "serie_temporal.mp4", mime="video/mp4")
+                    st.download_button("📥 Descargar MP4", st.session_state.video_result, "serie.mp4")
 
 st.markdown("---")
 st.caption("Ing. Luis A. Carnaghi (lcarnaghi@gmail.com) - Creador.")
