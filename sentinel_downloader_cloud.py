@@ -224,7 +224,6 @@ def add_text_to_image(img, text):
 # --- SIDEBAR ---
 with st.sidebar:
     st.subheader("🛰️ Plataforma")
-    # MODIFICACIÓN: Se agrega el periodo de tiempo al lado del nombre en el selectbox
     sat_choice = st.selectbox(
         "Satélite", 
         options=list(SAT_CONFIG.keys()), 
@@ -243,6 +242,9 @@ with st.sidebar:
     mes_num = meses.index(mes_nombre) + 1
     fecha_referencia = datetime(anio, mes_num, 1)
     max_cloud = st.slider("Nubosidad máx. (%)", 0, 100, 15)
+    
+    # NUEVO: Slider para cantidad de imágenes a buscar
+    max_search_items = st.slider("Imágenes a buscar", 10, 60, 20)
     
     st.markdown("---")
     st.subheader("⚙️ Salida")
@@ -264,7 +266,7 @@ with st.sidebar:
         with st.expander("🎬 Configuración Video"):
             video_fps = st.slider("FPS", 1, 5, 2)
             video_max_images = st.slider("Máx. frames", 3, 30, 15)
-            # NUEVO: Slider para filtro de No-Data en video
+            # Slider para filtro de No-Data en video
             video_max_nodata = st.slider("Máx. Sin Datos (%)", 0, 40, 5)
 
 # --- MAPA ---
@@ -308,7 +310,8 @@ if bbox:
             common_args = {"collections": [conf["collection"]], "bbox": bbox, "query": query_params}
             fecha_inicio, fecha_fin = fecha_referencia - timedelta(days=365), fecha_referencia + timedelta(days=365)
             
-            search = catalog.search(**common_args, datetime=f"{fecha_inicio.isoformat()}/{fecha_fin.isoformat()}", max_items=100)
+            # ACTUALIZACIÓN: Se usa max_search_items del slider
+            search = catalog.search(**common_args, datetime=f"{fecha_inicio.isoformat()}/{fecha_fin.isoformat()}", max_items=max_search_items)
             all_items = list(search.items())
             
             if all_items:
@@ -353,7 +356,7 @@ if bbox:
         
         if all_scenes:
             if formato_descarga != "Video MP4":
-                # ACTUALIZACIÓN: Etiqueta enriquecida con icono y porcentaje real
+                # Etiqueta enriquecida con icono y porcentaje real
                 scene_opts = {}
                 for i, s in enumerate(all_scenes):
                     pct_val = s.properties.get("custom_nodata_pct", 0.0)
@@ -417,7 +420,7 @@ if bbox:
                     # Orden inicial: Cercanía a fecha de referencia y nubosidad
                     pool = sorted(all_scenes, key=lambda x: (abs((x.datetime.replace(tzinfo=None) - fecha_referencia).days), x.properties[conf['cloud_key']]))
                     
-                    # MODIFICACIÓN: Filtrar por el % máximo de Sin Datos configurado en el slider
+                    # Filtrar por el % máximo de Sin Datos configurado en el slider
                     pool = [s for s in pool if s.properties.get("custom_nodata_pct", 0.0) <= video_max_nodata]
                     
                     if not pool:
