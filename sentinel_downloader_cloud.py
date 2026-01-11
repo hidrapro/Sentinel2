@@ -190,36 +190,36 @@ def apply_bulk_coverage_filter(items, bbox, epsg_code, asset_key):
     if needed_ids:
         try:
             needed_items = [i for i in items if i.id in needed_ids]
-            # Resolución muy baja para rapidez (1500m)
+            # Resolución de 500m para mejor detección en recortes pequeños
             ds = stackstac.stack(
                 needed_items, 
                 assets=[asset_key], 
                 bounds_latlon=bbox, 
                 epsg=epsg_code, 
-                resolution=1500
+                resolution=500,
+                dtype="float32",
+                fill_value=np.nan
             )
             
-            # Asegurar que seleccionamos la banda correcta y eliminamos dimensiones extra de forma segura
+            # Aseguramos la selección de la banda y limpiamos dimensiones
             ds_data = ds.sel(band=asset_key)
             
-            # Filtro estricto: Considerar No Data si es NaN o valores negros menores a 1 (offset)
-            # Muchos sensores usan valores muy bajos como 'fill'
+            # Filtro estricto de píxeles: no nulos y con valor mayor a 0 (negro real)
             valid_mask = ds_data.notnull() & (ds_data > 0)
             
-            # Computar el promedio espacial para cada paso de tiempo
+            # Calculamos promedio espacial (x, y) para obtener % de cobertura útil
             coverage_array = valid_mask.mean(dim=['x', 'y']).compute().values * 100
             
-            # Guardar en cache mapeando ID -> Valor
+            # Mapeo persistente de IDs
             for i, item_id in enumerate(needed_ids):
-                # Si el array es 2D (time, band), tomamos el primer elemento si es necesario
-                val = coverage_array[i] if coverage_array.ndim == 1 else coverage_array[i, 0]
+                val = coverage_array[i] if coverage_array.ndim > 0 else coverage_array
                 st.session_state.coverage_cache[item_id] = float(val)
         except Exception as e:
             st.error(f"Error en filtro automático: {e}")
             for item_id in needed_ids:
                 st.session_state.coverage_cache[item_id] = 100.0
 
-    # Retornamos solo los que pasan el filtro (más del 50% de datos útiles)
+    # Retornamos solo los que tienen más del 50% de datos útiles en la AOI
     return [i for i in items if st.session_state.coverage_cache.get(i.id, 0) > 50]
 
 # --- SIDEBAR: CONFIGURACIÓN ---
