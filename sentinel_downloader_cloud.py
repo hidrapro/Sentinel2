@@ -18,7 +18,11 @@ import imageio
 
 # --- CONFIGURACIÓN DE PÁGINA ---
 st.set_page_config(page_title="Satelites LandSat y Sentinel 2", layout="wide", page_icon="🛰️")
-st.title("🛰️ Visualizador Imagenes LandSat y Sentinel 2")
+st.title("🛰️ Visualizador y descarga de recortes")
+
+# --- INICIALIZACIÓN DE ESTADO PARA BOTONES ---
+if "preview_label" not in st.session_state:
+    st.session_state.preview_label = "🖼️ Vista Previa"
 
 # --- DICCIONARIO DE CONFIGURACIÓN POR SATÉLITE ---
 SAT_CONFIG = {
@@ -132,74 +136,41 @@ def normalize_image_robust(img_arr, p_low=2, p_high=98, scale=1.0, offset=0.0):
 def add_text_to_image(img, text):
     """Añadir texto a una imagen PIL con tamaño equilibrado (5% del ancho)."""
     draw = ImageDraw.Draw(img)
-    
-    # Reducido al 5% del ancho de la imagen
     font_size = int(img.width * 0.05)
-    
     font = None
-    # Rutas comunes de fuentes en Linux/Streamlit Cloud
     font_paths = [
         "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
         "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
         "/usr/share/fonts/truetype/freefont/FreeSansBold.ttf",
         "arial.ttf"
     ]
-    
     for path in font_paths:
         try:
             font = ImageFont.truetype(path, font_size)
             break
         except:
             continue
-            
     if font is None:
         font = ImageFont.load_default()
-    
-    # Obtener dimensiones del texto
     bbox = draw.textbbox((0, 0), text, font=font)
-    tw = bbox[2] - bbox[0]
-    th = bbox[3] - bbox[1]
-    
-    # Padding y márgenes ajustados al nuevo tamaño
+    tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
     padding = int(font_size * 0.2)
     margin_bottom = int(font_size * 0.3)
-    
-    # Posición central inferior
     x_pos = (img.width - tw) // 2
     y_pos = img.height - th - margin_bottom
-    
-    # Dibujar fondo (rectángulo)
-    draw.rectangle(
-        [(x_pos - padding, y_pos - padding), 
-         (x_pos + tw + padding, y_pos + th + padding)], 
-        fill=(0, 0, 0, 180)
-    )
-    
-    # Dibujar texto
+    draw.rectangle([(x_pos - padding, y_pos - padding), (x_pos + tw + padding, y_pos + th + padding)], fill=(0, 0, 0, 180))
     draw.text((x_pos, y_pos), text, fill=(255, 255, 255), font=font)
-    if font == ImageFont.load_default():
-        # Efecto de grosor para la fuente por defecto si falla el cargado
-        draw.text((x_pos+1, y_pos), text, fill=(255, 255, 255), font=font)
-        draw.text((x_pos, y_pos+1), text, fill=(255, 255, 255), font=font)
-
     return img
 
 # --- SIDEBAR: CONFIGURACIÓN ---
 with st.sidebar:
     st.header("1. Selección de Plataforma")
-    
     def sat_label_formatter(key):
         c = SAT_CONFIG[key]
         end = "Presente" if c["max_year"] == datetime.now().year else str(c["max_year"])
         return f"{key} ({c['min_year']} - {end})"
-
-    sat_choice = st.selectbox(
-        "Satélite", 
-        options=list(SAT_CONFIG.keys()), 
-        format_func=sat_label_formatter
-    )
+    sat_choice = st.selectbox("Satélite", options=list(SAT_CONFIG.keys()), format_func=sat_label_formatter)
     conf = SAT_CONFIG[sat_choice]
-
     st.header("2. Filtros Temporales")
     meses = ["Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio", "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"]
     col_m, col_a = st.columns(2)
@@ -207,20 +178,15 @@ with st.sidebar:
         mes_nombre = st.selectbox("Mes", meses, index=datetime.now().month - 1)
     with col_a:
         anio = st.number_input("Año", min_value=conf["min_year"], max_value=conf["max_year"], value=conf["max_year"])
-    
     mes_num = meses.index(mes_nombre) + 1
     fecha_referencia = datetime(anio, mes_num, 1)
     max_cloud = st.slider("Nubosidad máx. (%)", 0, 100, 15)
-    
     st.markdown("---")
     st.header("3. Mapa y Salida")
     map_style = st.selectbox("Estilo del Mapa", ["OpenStreetMap", "Satélite (Esri)", "Topográfico (OpenTopo)"])
     res_final = st.number_input("Resolución descarga (m)", value=conf["res"], min_value=10)
     formato_descarga = st.radio("Formato:", ["GeoTIFF (GIS)", "JPG (Visual)", "Video MP4", "Todos"])
-    
     percentil_bajo, percentil_alto = 2, 98
-
-    # --- FILTRO MANUAL DE FECHAS ---
     exclude_dates = []
     if 'scenes_before' in st.session_state and 'scenes_after' in st.session_state:
         st.markdown("---")
@@ -228,7 +194,6 @@ with st.sidebar:
         all_candidates = st.session_state['scenes_before'] + st.session_state['scenes_after']
         all_dates = sorted(list(set([s.datetime.strftime('%d/%m/%Y') for s in all_candidates])))
         exclude_dates = st.multiselect("Ignorar estas fechas:", options=all_dates)
-
     if "Video" in formato_descarga or "Todos" == formato_descarga:
         st.markdown("---")
         st.header("5. Video Temporal")
@@ -239,7 +204,13 @@ with st.sidebar:
 st.subheader("1. Área de Interés (AOI)")
 tile_urls = {"OpenStreetMap": "OpenStreetMap", "Satélite (Esri)": "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}", "Topográfico (OpenTopo)": "https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png"}
 m = folium.Map(location=[-35.444, -60.884], zoom_start=13, tiles=tile_urls[map_style] if map_style == "OpenStreetMap" else tile_urls[map_style], attr="Tiles &copy; Esri / OpenTopoMap" if map_style != "OpenStreetMap" else None)
-LocateControl(auto_start=True).add_to(m)
+
+# Configuración de localización para centrar el mapa
+LocateControl(
+    auto_start=False,
+    locateOptions={'setView': True, 'flyTo': True, 'maxZoom': 15}
+).add_to(m)
+
 Draw(draw_options={'polyline':False, 'polygon':False, 'circle':False, 'marker':False, 'circlemarker':False, 'rectangle':True}).add_to(m)
 map_data = st_folium(m, width=1200, height=400, key="main_map")
 
@@ -262,10 +233,8 @@ if bbox:
             query_params = {conf["cloud_key"]: {"lt": max_cloud}}
             if conf["platform"]: query_params["platform"] = {"in": conf["platform"]}
             common_args = {"collections": [conf["collection"]], "bbox": bbox, "query": query_params}
-            
             fecha_inicio, fecha_fin = fecha_referencia - timedelta(days=365), fecha_referencia + timedelta(days=365)
             search = catalog.search(**common_args, datetime=f"{fecha_inicio.isoformat()}/{fecha_fin.isoformat()}", max_items=100)
-            
             all_items = list(search.items())
             if all_items:
                 st.session_state['scenes_before'] = [i for i in all_items if i.datetime < fecha_referencia.replace(tzinfo=i.datetime.tzinfo)]
@@ -296,24 +265,31 @@ if bbox:
 
                 col1, col2 = st.columns(2)
                 with col1:
-                    if st.button("🖼️ Vista Previa"):
-                        data_raw = stackstac.stack(item, assets=conf["assets"], bounds_latlon=bbox, epsg=epsg_code, resolution=conf["res"]*2).squeeze().compute()
-                        img_np = np.moveaxis(data_raw.sel(band=conf["assets"][:3]).values, 0, -1)
-                        img = normalize_image_robust(img_np, percentil_bajo, percentil_alto, conf["scale"], conf["offset"])
-                        st.image(img, use_container_width=True, caption=f"Composición RGB: {idx_name}")
+                    # Lógica de botón dinámico para Vista Previa
+                    if st.button(st.session_state.preview_label):
+                        st.session_state.preview_label = "⏳ Generando Imagen..."
+                        st.rerun()
+                    
+                    if st.session_state.preview_label == "⏳ Generando Imagen...":
+                        try:
+                            data_raw = stackstac.stack(item, assets=conf["assets"], bounds_latlon=bbox, epsg=epsg_code, resolution=conf["res"]*2).squeeze().compute()
+                            img_np = np.moveaxis(data_raw.sel(band=conf["assets"][:3]).values, 0, -1)
+                            img = normalize_image_robust(img_np, percentil_bajo, percentil_alto, conf["scale"], conf["offset"])
+                            st.image(img, use_container_width=True, caption=f"Composición RGB: {idx_name}")
+                        finally:
+                            # Volver al texto original después del renderizado
+                            st.session_state.preview_label = "🖼️ Vista Previa"
+
                 with col2:
                     if st.button("🚀 Descargar HD"):
                         with st.status("Procesando datos HD..."):
                             data_raw = stackstac.stack(item, assets=conf["assets"], bounds_latlon=bbox, epsg=epsg_code, resolution=res_final).squeeze()
                             data_final = data_raw.sel(band=conf["assets"][:3])
                             fname = f"{sat_choice.replace(' ', '_')}_{item.datetime.strftime('%Y%m%d')}_RGB"
-                            
                             if "GeoTIFF" in formato_descarga or "Todos" == formato_descarga:
                                 with tempfile.NamedTemporaryFile(suffix='.tif', delete=False) as tmp:
                                     data_final.rio.to_raster(tmp.name)
-                                    with open(tmp.name, 'rb') as f: 
-                                        st.download_button(f"📥 {fname}.tif", f.read(), f"{fname}.tif")
-                                        
+                                    with open(tmp.name, 'rb') as f: st.download_button(f"📥 {fname}.tif", f.read(), f"{fname}.tif")
                             if "JPG" in formato_descarga or "Todos" == formato_descarga:
                                 data_np = data_final.compute().values
                                 img_input = np.moveaxis(data_np, 0, -1)
@@ -335,41 +311,27 @@ if bbox:
                             try:
                                 date_str = s.datetime.strftime('%d/%m/%Y')
                                 status.update(label=f"Analizando frame {processed + 1}: {date_str}...")
-                                # Generamos el frame a resolución visual
                                 data_f = stackstac.stack(s, assets=conf["assets"], bounds_latlon=bbox, epsg=epsg_code, resolution=conf["res"]*2).squeeze().compute()
                                 check_np = data_f.sel(band=conf["assets"][0]).values
                                 if np.mean(np.isnan(check_np) | (check_np <= 0)) > 0.20: continue
                                 img_np = np.moveaxis(data_f.sel(band=conf["assets"][:3]).values, 0, -1)
                                 img_8bit = normalize_image_robust(img_np, percentil_bajo, percentil_alto, conf["scale"], conf["offset"])
-                                
                                 pil_img = Image.fromarray(img_8bit)
-                                
-                                # --- PASO CRUCIAL PARA LA HOMOGENEIDAD ---
-                                # Redimensionamos todas las imágenes a un ancho estándar (1000px)
                                 target_w = 1000
                                 h_resize = int(pil_img.height * (target_w / pil_img.width))
                                 pil_img = pil_img.resize((target_w, h_resize), Image.Resampling.LANCZOS)
-                                
-                                # Añadimos el texto sobre la imagen estandarizada
                                 frames_list.append((s.datetime, add_text_to_image(pil_img, date_str)))
                                 processed += 1
                             except: continue
-                        
                         if frames_list:
                             status.update(label="Generando video MP4...")
                             frames_list.sort(key=lambda x: x[0])
                             images_only = [np.array(f[1]) for f in frames_list]
-                            
                             with tempfile.NamedTemporaryFile(suffix='.mp4', delete=False) as tmp:
                                 writer = imageio.get_writer(tmp.name, fps=video_fps, codec='libx264', quality=8)
-                                for frame in images_only:
-                                    writer.append_data(frame)
+                                for frame in images_only: writer.append_data(frame)
                                 writer.close()
-                                
-                                with open(tmp.name, 'rb') as f:
-                                    video_bytes = f.read()
-                            
-                            # Visualización inmediata una vez listo
+                                with open(tmp.name, 'rb') as f: video_bytes = f.read()
                             st.success(f"✅ Video generado: {len(images_only)} frames a {video_fps} FPS")
                             st.video(video_bytes, autoplay=True)
                             st.download_button("📥 Descargar Video MP4", video_bytes, "serie_temporal.mp4", mime="video/mp4")
