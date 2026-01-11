@@ -243,7 +243,7 @@ with st.sidebar:
     fecha_referencia = datetime(anio, mes_num, 1)
     max_cloud = st.slider("Nubosidad máx. (%)", 0, 100, 15)
     
-    # NUEVO: Slider para cantidad de imágenes a buscar
+    # Slider para cantidad de imágenes a buscar
     max_search_items = st.slider("Imágenes a buscar", 10, 60, 20)
     
     st.markdown("---")
@@ -305,31 +305,54 @@ if bbox:
     if st.session_state.searching:
         try:
             catalog = pystac_client.Client.open("https://planetarycomputer.microsoft.com/api/stac/v1", modifier=planetary_computer.sign_inplace)
+            
+            # Dividimos la búsqueda en dos para centrarla en la fecha de referencia
+            half_items = max_search_items // 2
+            
             query_params = {conf["cloud_key"]: {"lt": max_cloud}}
             if pool_val := conf.get("platform"): query_params["platform"] = {"in": pool_val}
-            common_args = {"collections": [conf["collection"]], "bbox": bbox, "query": query_params}
-            fecha_inicio, fecha_fin = fecha_referencia - timedelta(days=365), fecha_referencia + timedelta(days=365)
             
-            # ACTUALIZACIÓN: Se usa max_search_items del slider
-            search = catalog.search(**common_args, datetime=f"{fecha_inicio.isoformat()}/{fecha_fin.isoformat()}", max_items=max_search_items)
-            all_items = list(search.items())
+            # Rango de búsqueda amplio (1 año hacia atrás y 1 año hacia adelante)
+            f_past_start = fecha_referencia - timedelta(days=365)
+            f_future_end = fecha_referencia + timedelta(days=365)
+
+            # Búsqueda 1: Pasado (orden descendente para traer las más cercanas a la fecha)
+            search_past = catalog.search(
+                collections=[conf["collection"]],
+                bbox=bbox,
+                datetime=f"{f_past_start.isoformat()}/{fecha_referencia.isoformat()}",
+                query=query_params,
+                sortby=[{"field": "properties.datetime", "direction": "desc"}],
+                max_items=half_items
+            )
+            
+            # Búsqueda 2: Futuro (orden ascendente para traer las más cercanas a la fecha)
+            search_future = catalog.search(
+                collections=[conf["collection"]],
+                bbox=bbox,
+                datetime=f"{fecha_referencia.isoformat()}/{f_future_end.isoformat()}",
+                query=query_params,
+                sortby=[{"field": "properties.datetime", "direction": "asc"}],
+                max_items=max_search_items - half_items
+            )
+            
+            all_items = list(search_past.items()) + list(search_future.items())
             
             if all_items:
                 # ESTRATEGIA: Analizar píxeles reales de cada imagen encontrada
                 with st.status("Analizando cobertura real de datos...") as status:
                     for i, item in enumerate(all_items):
                         status.update(label=f"Chequeando imagen {i+1}/{len(all_items)}...")
-                        # Elegimos una banda para el chequeo (B04 para S2, red para Landsat)
                         check_asset = "B04" if "sentinel" in conf["collection"] else "red"
                         if check_asset not in item.assets:
                             check_asset = list(item.assets.keys())[0]
                         
-                        # Inyectamos el valor directamente en los metadatos del objeto
                         pct = check_nodata_fast(item, bbox, epsg_code, check_asset)
                         item.properties["custom_nodata_pct"] = pct
 
-                st.session_state['scenes_before'] = [i for i in all_items if i.datetime < fecha_referencia.replace(tzinfo=i.datetime.tzinfo)]
-                st.session_state['scenes_after'] = [i for i in all_items if i.datetime >= fecha_referencia.replace(tzinfo=i.datetime.tzinfo)]
+                # Separamos y guardamos en el estado
+                st.session_state['scenes_before'] = [i for i in all_items if i.datetime.replace(tzinfo=None) < fecha_referencia]
+                st.session_state['scenes_after'] = [i for i in all_items if i.datetime.replace(tzinfo=None) >= fecha_referencia]
                 st.session_state.search_count = len(all_items)
             else:
                 st.session_state.search_count = 0
@@ -344,9 +367,9 @@ if bbox:
     if st.session_state.search_count is not None:
         with col_count:
             if st.session_state.search_count > 0:
-                st.markdown(f'<div class="result-text">✨ Se encontraron {st.session_state.search_count} imágenes</div>', unsafe_allow_html=True)
+                st.markdown(f'<div class="result-text">✨ Se encontraron {st.session_state.search_count} imágenes equilibradas alrededor de la fecha</div>', unsafe_allow_html=True)
             else:
-                st.markdown('<div class="result-text" style="color:red">No se encontraron resultados.</div>', unsafe_allow_html=True)
+                st.markdown('<div class="result-text" style="color:red">No se encontraron resultados en el rango seleccionado.</div>', unsafe_allow_html=True)
 
     # --- DESPLIEGUE DE RESULTADOS ---
     if 'scenes_before' in st.session_state:
@@ -356,7 +379,6 @@ if bbox:
         
         if all_scenes:
             if formato_descarga != "Video MP4":
-                # Etiqueta enriquecida con icono y porcentaje real
                 scene_opts = {}
                 for i, s in enumerate(all_scenes):
                     pct_val = s.properties.get("custom_nodata_pct", 0.0)
@@ -417,8 +439,8 @@ if bbox:
                     st.session_state.video_result = None
                     frames_list = []
                     
-                    # Orden inicial: Cercanía a fecha de referencia y nubosidad
-                    pool = sorted(all_scenes, key=lambda x: (abs((x.datetime.replace(tzinfo=None) - fecha_referencia).days), x.properties[conf['cloud_key']]))
+                    # El pool ya viene equilibrado de la búsqueda
+                    pool = sorted(all_scenes, key=lambda x: x.datetime)
                     
                     # Filtrar por el % máximo de Sin Datos configurado en el slider
                     pool = [s for s in pool if s.properties.get("custom_nodata_pct", 0.0) <= video_max_nodata]
