@@ -256,7 +256,7 @@ if map_data and map_data.get('all_drawings'):
     lons, lats = [c[0] for c in coords], [c[1] for c in coords]
     bbox = [min(lons), min(lats), max(lons), max(lats)]
     epsg_code = get_utm_epsg((min(lons)+max(lons))/2, (min(lats)+max(lats))/2)
-    st.info(f"📍 Zona UTM detectada: EPSG:{epsg_code}")
+    # Se eliminó la visualización del st.info con la zona UTM
 
 # --- LÓGICA DE BÚSQUEDA ---
 if bbox:
