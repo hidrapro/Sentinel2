@@ -182,28 +182,40 @@ def add_text_to_image(img, text):
     draw.text((x_pos, y_pos), text, fill=(255, 255, 255), font=font)
     return img
 
-def get_data_coverage(item, bbox, epsg_code, asset_key):
-    """Calcula eficientemente el porcentaje de datos válidos en una AOI."""
-    if item.id in st.session_state.coverage_cache:
-        return st.session_state.coverage_cache[item.id]
+def apply_bulk_coverage_filter(items, bbox, epsg_code, asset_key):
+    """Cálculo vectorizado de cobertura para todo el catálogo de una vez."""
+    # Solo procesamos si hay items nuevos que no estén en cache
+    needed_ids = [i.id for i in items if i.id not in st.session_state.coverage_cache]
     
-    try:
-        # Estrategia eficiente: descargar solo una banda a bajísima resolución (500m)
-        data = stackstac.stack(
-            item, 
-            assets=[asset_key], 
-            bounds_latlon=bbox, 
-            epsg=epsg_code, 
-            resolution=500
-        ).squeeze().compute().values
-        
-        # Consideramos inválidos los NaNs y los valores <= 0
-        valid_mask = (~np.isnan(data)) & (data > 0)
-        coverage = np.mean(valid_mask) * 100
-        st.session_state.coverage_cache[item.id] = coverage
-        return coverage
-    except:
-        return 0
+    if needed_ids:
+        try:
+            needed_items = [i for i in items if i.id in needed_ids]
+            # Usamos una resolución muy baja (1000m) para que sea instantáneo
+            ds = stackstac.stack(
+                needed_items, 
+                assets=[asset_key], 
+                bounds_latlon=bbox, 
+                epsg=epsg_code, 
+                resolution=1000
+            ).squeeze()
+            
+            # Calculamos la cobertura para todo el cubo de tiempo a la vez
+            # valid_mask: True si hay datos (no NaN y > 0)
+            valid_mask = (~np.isnan(ds)) & (ds > 0)
+            # Promedio sobre las dimensiones espaciales (x, y)
+            coverage_array = valid_mask.mean(dim=['x', 'y']).compute().values * 100
+            
+            # Guardamos en cache
+            for i, item_id in enumerate(needed_ids):
+                st.session_state.coverage_cache[item_id] = float(coverage_array[i])
+        except Exception as e:
+            st.error(f"Error en filtro automático: {e}")
+            # En caso de error, asumimos cobertura 100 para no borrar nada
+            for item_id in needed_ids:
+                st.session_state.coverage_cache[item_id] = 100.0
+
+    # Retornamos solo los que pasan el filtro (más del 50% de datos)
+    return [i for i in items if st.session_state.coverage_cache.get(i.id, 0) >= 50]
 
 # --- SIDEBAR: CONFIGURACIÓN ---
 with st.sidebar:
@@ -249,7 +261,7 @@ with st.sidebar:
             exclude_dates = st.multiselect("Ignorar estas fechas manualmente:", options=all_dates)
             
             st.markdown("---")
-            auto_filter = st.checkbox("🧹 Filtro Auto: Datos > 50%", value=False, help="Elimina automáticamente imágenes que tengan más de la mitad del área negra o sin datos.")
+            auto_filter = st.checkbox("🧹 Filtro Auto: Datos > 50%", value=False, help="Estrategia vectorizada: detecta y elimina áreas negras de todo el catálogo eficientemente.")
     else:
         exclude_dates = []
         auto_filter = False
@@ -316,15 +328,10 @@ if bbox:
     if 'scenes_before' in st.session_state:
         full_pool = st.session_state['scenes_before'] + st.session_state['scenes_after']
         
-        # --- APLICACIÓN DE FILTRO AUTOMÁTICO ---
+        # --- APLICACIÓN DE FILTRO AUTOMÁTICO VECTORIZADO ---
         if auto_filter:
-            with st.spinner("Limpiando catálogo (Filtro Auto)..."):
-                filtered_pool = []
-                for s in full_pool:
-                    cov = get_data_coverage(s, bbox, epsg_code, conf["assets"][0])
-                    if cov >= 50:
-                        filtered_pool.append(s)
-                full_pool = filtered_pool
+            with st.spinner("Optimizando catálogo (Cálculo vectorizado)..."):
+                full_pool = apply_bulk_coverage_filter(full_pool, bbox, epsg_code, conf["assets"][0])
 
         all_scenes = [s for s in full_pool if s.datetime.strftime('%d/%m/%Y') not in exclude_dates]
         all_scenes.sort(key=lambda x: x.datetime)
