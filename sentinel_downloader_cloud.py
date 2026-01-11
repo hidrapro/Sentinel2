@@ -41,6 +41,8 @@ if "preview_image" not in st.session_state:
     st.session_state.preview_image = None
 if "current_scene_id" not in st.session_state:
     st.session_state.current_scene_id = None
+if "coverage_cache" not in st.session_state:
+    st.session_state.coverage_cache = {}
 
 # --- DICCIONARIO DE CONFIGURACIÓN POR SATÉLITE ---
 SAT_CONFIG = {
@@ -180,6 +182,29 @@ def add_text_to_image(img, text):
     draw.text((x_pos, y_pos), text, fill=(255, 255, 255), font=font)
     return img
 
+def get_data_coverage(item, bbox, epsg_code, asset_key):
+    """Calcula eficientemente el porcentaje de datos válidos en una AOI."""
+    if item.id in st.session_state.coverage_cache:
+        return st.session_state.coverage_cache[item.id]
+    
+    try:
+        # Estrategia eficiente: descargar solo una banda a bajísima resolución (500m)
+        data = stackstac.stack(
+            item, 
+            assets=[asset_key], 
+            bounds_latlon=bbox, 
+            epsg=epsg_code, 
+            resolution=500
+        ).squeeze().compute().values
+        
+        # Consideramos inválidos los NaNs y los valores <= 0
+        valid_mask = (~np.isnan(data)) & (data > 0)
+        coverage = np.mean(valid_mask) * 100
+        st.session_state.coverage_cache[item.id] = coverage
+        return coverage
+    except:
+        return 0
+
 # --- SIDEBAR: CONFIGURACIÓN ---
 with st.sidebar:
     st.subheader("🛰️ Plataforma")
@@ -218,12 +243,16 @@ with st.sidebar:
     
     # --- SECCIONES COLAPSABLES PARA AHORRAR ESPACIO ---
     if 'scenes_before' in st.session_state and 'scenes_after' in st.session_state:
-        with st.expander("🔍 Filtro Manual de Fechas"):
+        with st.expander("🔍 Filtros de Selección"):
             all_candidates = st.session_state['scenes_before'] + st.session_state['scenes_after']
             all_dates = sorted(list(set([s.datetime.strftime('%d/%m/%Y') for s in all_candidates])))
-            exclude_dates = st.multiselect("Ignorar estas fechas:", options=all_dates)
+            exclude_dates = st.multiselect("Ignorar estas fechas manualmente:", options=all_dates)
+            
+            st.markdown("---")
+            auto_filter = st.checkbox("🧹 Filtro Auto: Datos > 50%", value=False, help="Elimina automáticamente imágenes que tengan más de la mitad del área negra o sin datos.")
     else:
         exclude_dates = []
+        auto_filter = False
 
     if "Video" in formato_descarga or formato_descarga == "Todos":
         with st.expander("🎬 Configuración Video"):
@@ -279,17 +308,29 @@ if bbox:
                 st.session_state['scenes_before'] = [i for i in all_items if i.datetime < fecha_referencia.replace(tzinfo=i.datetime.tzinfo)]
                 st.session_state['scenes_after'] = [i for i in all_items if i.datetime >= fecha_referencia.replace(tzinfo=i.datetime.tzinfo)]
                 st.session_state.preview_image = None
+                st.session_state.coverage_cache = {} # Resetear cache al buscar nuevo
                 st.rerun()
             else:
                 st.error("No se encontraron imágenes en el área.")
 
     if 'scenes_before' in st.session_state:
         full_pool = st.session_state['scenes_before'] + st.session_state['scenes_after']
+        
+        # --- APLICACIÓN DE FILTRO AUTOMÁTICO ---
+        if auto_filter:
+            with st.spinner("Limpiando catálogo (Filtro Auto)..."):
+                filtered_pool = []
+                for s in full_pool:
+                    cov = get_data_coverage(s, bbox, epsg_code, conf["assets"][0])
+                    if cov >= 50:
+                        filtered_pool.append(s)
+                full_pool = filtered_pool
+
         all_scenes = [s for s in full_pool if s.datetime.strftime('%d/%m/%Y') not in exclude_dates]
         all_scenes.sort(key=lambda x: x.datetime)
         
         if not all_scenes:
-            st.warning("No hay escenas disponibles.")
+            st.warning("No hay escenas disponibles (filtros aplicados).")
         else:
             if formato_descarga != "Video MP4":
                 scene_opts = {f"{s.datetime.strftime('%d/%m/%Y')} | Nubes: {s.properties[conf['cloud_key']]:.1f}%": i for i, s in enumerate(all_scenes)}
@@ -304,6 +345,8 @@ if bbox:
                     st.write(f"**ID:** `{item.id}`")
                     st.write(f"**Plataforma:** {item.properties.get('platform', 'N/A')}")
                     st.write(f"**Nubes:** {item.properties.get(conf['cloud_key'], 0):.2f}%")
+                    if item.id in st.session_state.coverage_cache:
+                        st.write(f"**Datos útiles en AOI:** {st.session_state.coverage_cache[item.id]:.1f}%")
 
                 col_btn1, col_btn2 = st.columns(2)
                 with col_btn1:
