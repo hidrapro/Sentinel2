@@ -152,9 +152,10 @@ def calculate_data_coverage(data_array, satellite_type="Sentinel-2"):
     
     # Para Sentinel-2, solo los NaN son sin datos
     if "Sentinel" in satellite_type:
-        valid_data = ~np.isnan(data_array)
+        # En Sentinel-2, verificar NaN y también valores muy negativos que indican nodata
+        valid_data = ~(np.isnan(data_array) | (data_array < -100))
     else:
-        # Para Landsat, NaN y valores <= 0 son sin datos
+        # Para Landsat, NaN y valores <= 0 son sin datos (después de aplicar scale y offset)
         valid_data = ~(np.isnan(data_array) | (data_array <= 0))
     
     coverage = np.mean(valid_data) * 100
@@ -332,8 +333,7 @@ if bbox:
                                 bounds_latlon=bbox, 
                                 epsg=epsg_code, 
                                 resolution=calc_resolution,
-                                dtype="float32",  # Menos memoria
-                                fill_value=np.nan
+                                dtype="float32"
                             ).squeeze().compute()
                             
                             coverage = calculate_data_coverage(data_quick.values, sat_choice)
@@ -341,6 +341,7 @@ if bbox:
                             
                         except Exception as e:
                             st.session_state.scene_coverage[scene_id] = 0.0
+                            st.warning(f"Error en escena {idx + 1}: {str(e)[:100]}")
                     
                     progress_bar.progress((idx + 1) / len(all_scenes))
                 
@@ -420,8 +421,7 @@ if bbox:
                                         bounds_latlon=bbox, 
                                         epsg=epsg_code, 
                                         resolution=calc_res,
-                                        dtype="float32",
-                                        fill_value=np.nan
+                                        dtype="float32"
                                     ).squeeze().compute()
                                     coverage = calculate_data_coverage(data_check.values, sat_choice)
                                     st.session_state.scene_coverage[item.id] = round(coverage, 1)
