@@ -497,8 +497,8 @@ if bbox and search_allowed:
                                 # KMZ especializado (Reproyectado a EPSG:4326 para Google Earth)
                                 if "KMZ" in formato_descarga or formato_descarga == "Todos":
                                     # Para Google Earth, necesitamos re-proyectar a EPSG:4326 
-                                    # para evitar la rotación/deformación que causa UTM al solapar imágenes
-                                    data_4326 = data_final.rio.reproject("EPSG:4326")
+                                    # Usamos remuestreo bilineal para mantener la nitidez visual de los 10m
+                                    data_4326 = data_final.rio.reproject("EPSG:4326", resampling=Resampling.bilinear)
                                     img_np = np.moveaxis(data_4326.compute().values, 0, -1)
                                     img_8bit_kmz = normalize_image_robust(img_np, 2, percentil_alto, conf["scale"], conf["offset"])
                                     
