@@ -475,37 +475,50 @@ if bbox and search_allowed:
                     if st.session_state.hd_file_ready is None:
                         if st.button("🚀 Generar Archivos HD", key="gen_hd_btn"):
                             with st.status("Preparando HD..."):
+                                # El procesamiento principal se mantiene en UTM para mayor velocidad y precisión de recorte
                                 data_raw = stackstac.stack(item, assets=selected_assets, bounds_latlon=bbox, epsg=epsg_code, resolution=res_final).squeeze()
                                 data_final = data_raw.sel(band=selected_assets)
                                 fname = f"{sat_choice.replace(' ', '_')}_{item.datetime.strftime('%Y%m%d')}_{viz_mode.replace(' ','')}"
                                 
                                 results = {}
+                                # GeoTIFF nativo (en UTM)
                                 if "GeoTIFF" in formato_descarga or formato_descarga == "Todos":
                                     with tempfile.NamedTemporaryFile(suffix='.tif', delete=False) as tmp:
                                         data_final.rio.to_raster(tmp.name)
                                         with open(tmp.name, 'rb') as f: results['tif'] = (f.read(), f"{fname}.tif")
+                                
+                                # JPG visual (en UTM)
                                 if "JPG" in formato_descarga or formato_descarga == "Todos":
                                     img_8bit = normalize_image_robust(np.moveaxis(data_final.compute().values, 0, -1), 2, percentil_alto, conf["scale"], conf["offset"])
                                     buf = io.BytesIO()
                                     Image.fromarray(img_8bit).save(buf, format='JPEG', quality=95)
                                     results['jpg'] = (buf.getvalue(), f"{fname}.jpg")
+                                
+                                # KMZ especializado (Reproyectado a EPSG:4326 para Google Earth)
                                 if "KMZ" in formato_descarga or formato_descarga == "Todos":
-                                    # Generamos JPG para el KMZ
-                                    img_8bit = normalize_image_robust(np.moveaxis(data_final.compute().values, 0, -1), 2, percentil_alto, conf["scale"], conf["offset"])
-                                    buf_jpg = io.BytesIO()
-                                    Image.fromarray(img_8bit).save(buf_jpg, format='JPEG', quality=95)
+                                    # Para Google Earth, necesitamos re-proyectar a EPSG:4326 
+                                    # para evitar la rotación/deformación que causa UTM al solapar imágenes
+                                    data_4326 = data_final.rio.reproject("EPSG:4326")
+                                    img_np = np.moveaxis(data_4326.compute().values, 0, -1)
+                                    img_8bit_kmz = normalize_image_robust(img_np, 2, percentil_alto, conf["scale"], conf["offset"])
                                     
-                                    # Contenido KML para GroundOverlay
+                                    # Obtenemos los límites exactos de la imagen ya proyectada
+                                    bounds_4326 = data_4326.rio.bounds()
+                                    west_kmz, south_kmz, east_kmz, north_kmz = bounds_4326
+                                    
+                                    buf_jpg = io.BytesIO()
+                                    Image.fromarray(img_8bit_kmz).save(buf_jpg, format='JPEG', quality=95)
+                                    
                                     kml_content = f"""<?xml version="1.0" encoding="UTF-8"?>
 <kml xmlns="http://www.opengis.net/kml/2.2">
   <GroundOverlay>
     <name>{fname}</name>
     <Icon><href>overlay.jpg</href></Icon>
     <LatLonBox>
-      <north>{bbox[3]}</north>
-      <south>{bbox[1]}</south>
-      <east>{bbox[2]}</east>
-      <west>{bbox[0]}</west>
+      <north>{north_kmz}</north>
+      <south>{south_kmz}</south>
+      <east>{east_kmz}</east>
+      <west>{west_kmz}</west>
     </LatLonBox>
   </GroundOverlay>
 </kml>"""
