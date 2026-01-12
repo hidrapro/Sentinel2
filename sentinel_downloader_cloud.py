@@ -123,7 +123,6 @@ if "video_result" not in st.session_state:
     st.session_state.video_result = None
 
 # --- DICCIONARIO DE CONFIGURACIÓN POR SATÉLITE ---
-# Hemos ampliado 'assets' para incluir bandas de color natural (Azul) y SWIR
 SAT_CONFIG = {
     "Sentinel-2": {
         "collection": "sentinel-2-l2a",
@@ -287,7 +286,6 @@ with st.sidebar:
     )
     conf = SAT_CONFIG[sat_choice]
     
-    # NUEVO: Selector de Visualización (Natural vs Agua-Tierra)
     viz_mode = st.radio("Visualización", options=list(conf["viz"].keys()), horizontal=True)
     selected_assets = conf["viz"][viz_mode]
 
@@ -301,7 +299,8 @@ with st.sidebar:
     mes_num = meses.index(mes_nombre) + 1
     fecha_referencia = datetime(anio, mes_num, 1)
     max_cloud = st.slider("Nubosidad máx. (%)", 0, 100, 15)
-    max_search_items = st.slider("Imágenes a buscar", 10, 60, 20)
+    # ACTUALIZACIÓN: Valor mínimo de imágenes a buscar ahora es 2
+    max_search_items = st.slider("Imágenes a buscar", 2, 60, 20)
     
     st.markdown("---")
     st.subheader("⚙️ Salida")
@@ -391,13 +390,13 @@ if bbox and search_allowed:
                 collections=[conf["collection"]], bbox=bbox,
                 datetime=f"{f_past_start.isoformat()}/{fecha_referencia.isoformat()}",
                 query=query_params, sortby=[{"field": "properties.datetime", "direction": "desc"}],
-                max_items=half_items
+                max_items=max(1, half_items)
             )
             search_future = catalog.search(
                 collections=[conf["collection"]], bbox=bbox,
                 datetime=f"{fecha_referencia.isoformat()}/{f_future_end.isoformat()}",
                 query=query_params, sortby=[{"field": "properties.datetime", "direction": "asc"}],
-                max_items=max_search_items - half_items
+                max_items=max(1, max_search_items - half_items)
             )
             
             all_items = list(search_past.items()) + list(search_future.items())
@@ -405,7 +404,6 @@ if bbox and search_allowed:
                 with st.status("Analizando cobertura...") as status:
                     for i, item in enumerate(all_items):
                         status.update(label=f"Chequeando {i+1}/{len(all_items)}...")
-                        # Para el chequeo de NoData usamos siempre la banda 0 de la visualización actual
                         check_asset = selected_assets[0]
                         if check_asset not in item.assets: check_asset = list(item.assets.keys())[0]
                         pct = check_nodata_fast(item, bbox, epsg_code, check_asset)
