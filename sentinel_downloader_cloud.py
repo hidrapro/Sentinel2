@@ -15,6 +15,7 @@ import tempfile
 from PIL import Image, ImageDraw, ImageFont
 import io
 import imageio
+import zipfile
 
 # --- CONFIGURACIÓN DE PÁGINA ---
 st.set_page_config(page_title="Satelites LandSat y Sentinel 2", layout="wide", page_icon="🛰️")
@@ -309,7 +310,7 @@ with st.sidebar:
     c3, c4 = st.columns(2)
     with c3: res_final = st.number_input("Res. (m)", value=conf["res"], min_value=10)
     with c4: percentil_alto = st.number_input("% Alto", value=98, min_value=50, max_value=100)
-    formato_descarga = st.radio("Formato de descarga:", ["GeoTIFF (GIS)", "JPG (Visual)", "Video MP4", "Todos"], horizontal=True)
+    formato_descarga = st.radio("Formato de descarga:", ["GeoTIFF (GIS)", "JPG (Visual)", "KMZ (Google Earth)", "Video MP4", "Todos"], horizontal=True)
 
     if 'scenes_before' in st.session_state:
         with st.expander("🔍 Filtro Manual de Fechas"):
@@ -488,6 +489,33 @@ if bbox and search_allowed:
                                     buf = io.BytesIO()
                                     Image.fromarray(img_8bit).save(buf, format='JPEG', quality=95)
                                     results['jpg'] = (buf.getvalue(), f"{fname}.jpg")
+                                if "KMZ" in formato_descarga or formato_descarga == "Todos":
+                                    # Generamos JPG para el KMZ
+                                    img_8bit = normalize_image_robust(np.moveaxis(data_final.compute().values, 0, -1), 2, percentil_alto, conf["scale"], conf["offset"])
+                                    buf_jpg = io.BytesIO()
+                                    Image.fromarray(img_8bit).save(buf_jpg, format='JPEG', quality=95)
+                                    
+                                    # Contenido KML para GroundOverlay
+                                    kml_content = f"""<?xml version="1.0" encoding="UTF-8"?>
+<kml xmlns="http://www.opengis.net/kml/2.2">
+  <GroundOverlay>
+    <name>{fname}</name>
+    <Icon><href>overlay.jpg</href></Icon>
+    <LatLonBox>
+      <north>{bbox[3]}</north>
+      <south>{bbox[1]}</south>
+      <east>{bbox[2]}</east>
+      <west>{bbox[0]}</west>
+    </LatLonBox>
+  </GroundOverlay>
+</kml>"""
+                                    # Crear KMZ (ZIP con doc.kml y overlay.jpg)
+                                    kmz_buf = io.BytesIO()
+                                    with zipfile.ZipFile(kmz_buf, "w") as zf:
+                                        zf.writestr("doc.kml", kml_content)
+                                        zf.writestr("overlay.jpg", buf_jpg.getvalue())
+                                    
+                                    results['kmz'] = (kmz_buf.getvalue(), f"{fname}.kmz")
                                 
                                 st.session_state.hd_file_ready = results
                                 st.rerun()
