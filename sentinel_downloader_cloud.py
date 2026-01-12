@@ -123,11 +123,15 @@ if "video_result" not in st.session_state:
     st.session_state.video_result = None
 
 # --- DICCIONARIO DE CONFIGURACIÓN POR SATÉLITE ---
+# Hemos ampliado 'assets' para incluir bandas de color natural (Azul) y SWIR
 SAT_CONFIG = {
     "Sentinel-2": {
         "collection": "sentinel-2-l2a",
         "platform": None,
-        "assets": ["B08", "B11", "B04", "B03"],
+        "viz": {
+            "Color Natural": ["B04", "B03", "B02"],
+            "Agua-Tierra": ["B08", "B11", "B04"]
+        },
         "res": 10,
         "tile_key": "s2:mgrs_tile",
         "cloud_key": "eo:cloud_cover",
@@ -139,7 +143,10 @@ SAT_CONFIG = {
     "Landsat 8/9": {
         "collection": "landsat-c2-l2",
         "platform": ["landsat-8", "landsat-9"],
-        "assets": ["nir08", "swir16", "red", "green"],
+        "viz": {
+            "Color Natural": ["red", "green", "blue"],
+            "Agua-Tierra": ["nir08", "swir16", "red"]
+        },
         "res": 30,
         "tile_key": "landsat:wrs_path",
         "cloud_key": "eo:cloud_cover",
@@ -151,7 +158,10 @@ SAT_CONFIG = {
     "Landsat 7": {
         "collection": "landsat-c2-l2",
         "platform": ["landsat-7"],
-        "assets": ["nir08", "swir16", "red", "green"],
+        "viz": {
+            "Color Natural": ["red", "green", "blue"],
+            "Agua-Tierra": ["nir08", "swir16", "red"]
+        },
         "res": 30,
         "tile_key": "landsat:wrs_path",
         "cloud_key": "eo:cloud_cover",
@@ -163,7 +173,10 @@ SAT_CONFIG = {
     "Landsat 5": {
         "collection": "landsat-c2-l2",
         "platform": ["landsat-5"],
-        "assets": ["nir08", "swir16", "red", "green"], 
+        "viz": {
+            "Color Natural": ["red", "green", "blue"],
+            "Agua-Tierra": ["nir08", "swir16", "red"]
+        },
         "res": 30,
         "tile_key": "landsat:wrs_path",
         "cloud_key": "eo:cloud_cover",
@@ -175,7 +188,10 @@ SAT_CONFIG = {
     "Landsat 4": {
         "collection": "landsat-c2-l2",
         "platform": ["landsat-4"],
-        "assets": ["nir08", "swir16", "red", "green"], 
+        "viz": {
+            "Color Natural": ["red", "green", "blue"],
+            "Agua-Tierra": ["nir08", "swir16", "red"]
+        },
         "res": 30,
         "tile_key": "landsat:wrs_path",
         "cloud_key": "eo:cloud_cover",
@@ -187,7 +203,10 @@ SAT_CONFIG = {
     "Landsat 1-3 (MSS)": {
         "collection": "landsat-c2-l1",
         "platform": ["landsat-1", "landsat-2", "landsat-3"],
-        "assets": ["nir08", "red", "green"], 
+        "viz": {
+            "Color Natural": ["red", "green", "blue"],
+            "Agua-Tierra": ["nir08", "red", "green"]
+        },
         "res": 60,
         "tile_key": "landsat:wrs_path",
         "cloud_key": "eo:cloud_cover",
@@ -200,7 +219,6 @@ SAT_CONFIG = {
 
 # --- FUNCIONES AUXILIARES ---
 def get_utm_epsg(lon, lat):
-    # Normalizamos lon antes de calcular UTM
     lon = ((lon + 180) % 360) - 180
     utm_zone = int((lon + 180) / 6) + 1
     epsg_code = (32600 if lat >= 0 else 32700) + utm_zone
@@ -269,6 +287,10 @@ with st.sidebar:
     )
     conf = SAT_CONFIG[sat_choice]
     
+    # NUEVO: Selector de Visualización (Natural vs Agua-Tierra)
+    viz_mode = st.radio("Visualización", options=list(conf["viz"].keys()), horizontal=True)
+    selected_assets = conf["viz"][viz_mode]
+
     st.markdown("---")
     st.subheader("📅 Tiempo y Nubes")
     meses = ["Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio", "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"]
@@ -317,26 +339,23 @@ bbox = None
 search_allowed = True
 if map_data and map_data.get('all_drawings'):
     coords = map_data['all_drawings'][-1]['geometry']['coordinates'][0]
-    # Normalizamos longitudes al rango [-180, 180] para evitar errores al cruzar el antimeridiano
     lons_raw = [c[0] for c in coords]
     lons = [((lon + 180) % 360) - 180 for lon in lons_raw]
     lats = [c[1] for c in coords]
     
-    # Manejo básico de cruce de línea de fecha
-    if max(lons) - min(lons) > 300: # Cruce probable
+    if max(lons) - min(lons) > 300:
         west = max([l for l in lons if l < 0])
         east = min([l for l in lons if l > 0])
         bbox = [west, min(lats), east, max(lats)]
     else:
         bbox = [min(lons), min(lats), max(lons), max(lats)]
         
-    # --- CÁLCULO DE ÁREA (LIMITACIÓN A 1000 KM2) ---
     width_km = abs(bbox[2] - bbox[0]) * 111.32 * np.cos(np.radians((bbox[1]+bbox[3])/2))
     height_km = abs(bbox[3] - bbox[1]) * 110.57
     area_km2 = width_km * height_km
     
     if area_km2 > 1000:
-        st.error(f"⚠️ El área seleccionada ({area_km2:.1f} km²) es demasiado grande. El máximo permitido es 1000 km² para garantizar estabilidad.")
+        st.error(f"⚠️ El área seleccionada ({area_km2:.1f} km²) es demasiado grande. Máximo 1000 km².")
         search_allowed = False
     else:
         st.info(f"📏 Área seleccionada: {area_km2:.1f} km²")
@@ -386,7 +405,8 @@ if bbox and search_allowed:
                 with st.status("Analizando cobertura...") as status:
                     for i, item in enumerate(all_items):
                         status.update(label=f"Chequeando {i+1}/{len(all_items)}...")
-                        check_asset = "B04" if "sentinel" in conf["collection"] else "red"
+                        # Para el chequeo de NoData usamos siempre la banda 0 de la visualización actual
+                        check_asset = selected_assets[0]
                         if check_asset not in item.assets: check_asset = list(item.assets.keys())[0]
                         pct = check_nodata_fast(item, bbox, epsg_code, check_asset)
                         item.properties["custom_nodata_pct"] = pct
@@ -405,9 +425,7 @@ if bbox and search_allowed:
     if st.session_state.search_count is not None:
         with col_count:
             if st.session_state.search_count > 0:
-                st.markdown(f'<div class="result-text">✨ {st.session_state.search_count} imágenes equilibradas encontradas.</div>', unsafe_allow_html=True)
-            else:
-                st.markdown('<div class="result-text" style="color:red">Sin resultados en el rango.</div>', unsafe_allow_html=True)
+                st.markdown(f'<div class="result-text">✨ {st.session_state.search_count} imágenes ({viz_mode}) encontradas.</div>', unsafe_allow_html=True)
 
     # --- DESPLIEGUE DE RESULTADOS ---
     if 'scenes_before' in st.session_state:
@@ -440,21 +458,21 @@ if bbox and search_allowed:
                     if st.session_state.is_generating_preview:
                         try:
                             with st.spinner("Procesando..."):
-                                data_raw = stackstac.stack(item, assets=conf["assets"], bounds_latlon=bbox, epsg=epsg_code, resolution=conf["res"]*2).squeeze().compute()
-                                img_np = np.moveaxis(data_raw.sel(band=conf["assets"][:3]).values, 0, -1)
+                                data_raw = stackstac.stack(item, assets=selected_assets, bounds_latlon=bbox, epsg=epsg_code, resolution=conf["res"]*2).squeeze().compute()
+                                img_np = np.moveaxis(data_raw.sel(band=selected_assets).values, 0, -1)
                                 st.session_state.preview_image = normalize_image_robust(img_np, 2, percentil_alto, conf["scale"], conf["offset"])
                         finally:
                             st.session_state.is_generating_preview = False
                             st.rerun()
                     if st.session_state.preview_image is not None:
-                        st.image(st.session_state.preview_image, use_container_width=True)
+                        st.image(st.session_state.preview_image, use_container_width=True, caption=f"{viz_mode}")
 
                 with col_btn2:
                     if st.button("🚀 Descargar HD"):
                         with st.status("Preparando HD..."):
-                            data_raw = stackstac.stack(item, assets=conf["assets"], bounds_latlon=bbox, epsg=epsg_code, resolution=res_final).squeeze()
-                            data_final = data_raw.sel(band=conf["assets"][:3])
-                            fname = f"{sat_choice.replace(' ', '_')}_{item.datetime.strftime('%Y%m%d')}"
+                            data_raw = stackstac.stack(item, assets=selected_assets, bounds_latlon=bbox, epsg=epsg_code, resolution=res_final).squeeze()
+                            data_final = data_raw.sel(band=selected_assets)
+                            fname = f"{sat_choice.replace(' ', '_')}_{item.datetime.strftime('%Y%m%d')}_{viz_mode.replace(' ','')}"
                             if "GeoTIFF" in formato_descarga or formato_descarga == "Todos":
                                 with tempfile.NamedTemporaryFile(suffix='.tif', delete=False) as tmp:
                                     data_final.rio.to_raster(tmp.name)
@@ -467,7 +485,7 @@ if bbox and search_allowed:
 
             if "Video" in formato_descarga or formato_descarga == "Todos":
                 st.markdown("---")
-                if st.button("🎬 Generar Video MP4"):
+                if st.button(f"🎬 Generar Video {viz_mode}"):
                     st.session_state.video_result = None
                     frames_list = []
                     pool = [s for s in sorted(all_scenes, key=lambda x: x.datetime) if s.properties.get("custom_nodata_pct", 0.0) <= video_max_nodata]
@@ -480,8 +498,8 @@ if bbox and search_allowed:
                             for s in pool:
                                 if processed >= video_max_images: break
                                 try:
-                                    data_f = stackstac.stack(s, assets=conf["assets"], bounds_latlon=bbox, epsg=epsg_code, resolution=conf["res"]*2).squeeze().compute()
-                                    img_np = np.moveaxis(data_f.sel(band=conf["assets"][:3]).values, 0, -1)
+                                    data_f = stackstac.stack(s, assets=selected_assets, bounds_latlon=bbox, epsg=epsg_code, resolution=conf["res"]*2).squeeze().compute()
+                                    img_np = np.moveaxis(data_f.sel(band=selected_assets).values, 0, -1)
                                     img_8bit = normalize_image_robust(img_np, 2, percentil_alto, conf["scale"], conf["offset"])
                                     pil_img = Image.fromarray(img_8bit)
                                     target_w = 1000
