@@ -323,7 +323,7 @@ with st.sidebar:
     if "Video" in formato_descarga or formato_descarga == "Todos":
         with st.expander("🎬 Configuración Video"):
             video_fps = st.slider("FPS", 1, 5, 2)
-            video_max_images = st.slider("Máx. frames", 3, 30, 15)
+            video_max_images = st.slider("Máx. frames", 3, 60, 15)
             video_max_nodata = st.slider("Máx. Sin Datos (%)", 0, 40, 5)
 
 # --- MAPA ---
