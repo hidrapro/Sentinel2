@@ -121,6 +121,8 @@ if "search_count" not in st.session_state:
     st.session_state.search_count = None
 if "video_result" not in st.session_state:
     st.session_state.video_result = None
+if "hd_file_ready" not in st.session_state:
+    st.session_state.hd_file_ready = None
 
 # --- DICCIONARIO DE CONFIGURACIÓN POR SATÉLITE ---
 SAT_CONFIG = {
@@ -299,7 +301,6 @@ with st.sidebar:
     mes_num = meses.index(mes_nombre) + 1
     fecha_referencia = datetime(anio, mes_num, 1)
     max_cloud = st.slider("Nubosidad máx. (%)", 0, 100, 15)
-    # ACTUALIZACIÓN: Valor mínimo de imágenes a buscar ahora es 2
     max_search_items = st.slider("Imágenes a buscar", 2, 60, 20)
     
     st.markdown("---")
@@ -371,9 +372,10 @@ if bbox and search_allowed:
         needs_highlight = st.session_state.search_count is None and not st.session_state.searching
         if needs_highlight: st.markdown('<div class="highlight-search">', unsafe_allow_html=True)
         btn_text = "Buscando..." if st.session_state.searching else "🔍 Buscar Imágenes"
-        if st.button(btn_text, disabled=st.session_state.searching, use_container_width=True):
+        if st.button(btn_text, disabled=st.session_state.searching, key="search_btn", use_container_width=True):
             st.session_state.searching = True
             st.session_state.video_result = None
+            st.session_state.hd_file_ready = None # Limpiar descargas previas
             st.rerun()
         if needs_highlight: st.markdown('</div>', unsafe_allow_html=True)
 
@@ -444,13 +446,15 @@ if bbox and search_allowed:
                 
                 idx_name = st.selectbox("Imagen específica:", list(scene_opts.keys()))
                 item = all_scenes[scene_opts[idx_name]]
+                
                 if st.session_state.current_scene_id != item.id:
                     st.session_state.preview_image = None
                     st.session_state.current_scene_id = item.id
+                    st.session_state.hd_file_ready = None # Reiniciar descarga al cambiar de escena
 
                 col_btn1, col_btn2 = st.columns(2)
                 with col_btn1:
-                    if st.button("🖼️ Vista Previa", disabled=st.session_state.is_generating_preview):
+                    if st.button("🖼️ Vista Previa", key="prev_btn", disabled=st.session_state.is_generating_preview):
                         st.session_state.is_generating_preview = True
                         st.rerun()
                     if st.session_state.is_generating_preview:
@@ -466,24 +470,39 @@ if bbox and search_allowed:
                         st.image(st.session_state.preview_image, use_container_width=True, caption=f"{viz_mode}")
 
                 with col_btn2:
-                    if st.button("🚀 Descargar HD"):
-                        with st.status("Preparando HD..."):
-                            data_raw = stackstac.stack(item, assets=selected_assets, bounds_latlon=bbox, epsg=epsg_code, resolution=res_final).squeeze()
-                            data_final = data_raw.sel(band=selected_assets)
-                            fname = f"{sat_choice.replace(' ', '_')}_{item.datetime.strftime('%Y%m%d')}_{viz_mode.replace(' ','')}"
-                            if "GeoTIFF" in formato_descarga or formato_descarga == "Todos":
-                                with tempfile.NamedTemporaryFile(suffix='.tif', delete=False) as tmp:
-                                    data_final.rio.to_raster(tmp.name)
-                                    with open(tmp.name, 'rb') as f: st.download_button(f"📥 Descargar .tif", f.read(), f"{fname}.tif")
-                            if "JPG" in formato_descarga or formato_descarga == "Todos":
-                                img_8bit = normalize_image_robust(np.moveaxis(data_final.compute().values, 0, -1), 2, percentil_alto, conf["scale"], conf["offset"])
-                                buf = io.BytesIO()
-                                Image.fromarray(img_8bit).save(buf, format='JPEG', quality=95)
-                                st.download_button(f"📷 Descargar .jpg", buf.getvalue(), f"{fname}.jpg")
+                    # Lógica mejorada: Si el archivo no está listo, mostramos botón de proceso
+                    if st.session_state.hd_file_ready is None:
+                        if st.button("🚀 Generar Archivos HD", key="gen_hd_btn"):
+                            with st.status("Preparando HD..."):
+                                data_raw = stackstac.stack(item, assets=selected_assets, bounds_latlon=bbox, epsg=epsg_code, resolution=res_final).squeeze()
+                                data_final = data_raw.sel(band=selected_assets)
+                                fname = f"{sat_choice.replace(' ', '_')}_{item.datetime.strftime('%Y%m%d')}_{viz_mode.replace(' ','')}"
+                                
+                                results = {}
+                                if "GeoTIFF" in formato_descarga or formato_descarga == "Todos":
+                                    with tempfile.NamedTemporaryFile(suffix='.tif', delete=False) as tmp:
+                                        data_final.rio.to_raster(tmp.name)
+                                        with open(tmp.name, 'rb') as f: results['tif'] = (f.read(), f"{fname}.tif")
+                                if "JPG" in formato_descarga or formato_descarga == "Todos":
+                                    img_8bit = normalize_image_robust(np.moveaxis(data_final.compute().values, 0, -1), 2, percentil_alto, conf["scale"], conf["offset"])
+                                    buf = io.BytesIO()
+                                    Image.fromarray(img_8bit).save(buf, format='JPEG', quality=95)
+                                    results['jpg'] = (buf.getvalue(), f"{fname}.jpg")
+                                
+                                st.session_state.hd_file_ready = results
+                                st.rerun()
+                    else:
+                        # Si el archivo está listo, mostramos directamente los botones de descarga final
+                        st.success("✅ ¡Archivos HD listos!")
+                        for key, (data, name) in st.session_state.hd_file_ready.items():
+                            st.download_button(f"📥 Descargar {name}", data, name, key=f"dl_{key}", use_container_width=True)
+                        if st.button("🔄 Generar otra vez", key="reset_hd"):
+                            st.session_state.hd_file_ready = None
+                            st.rerun()
 
             if "Video" in formato_descarga or formato_descarga == "Todos":
                 st.markdown("---")
-                if st.button(f"🎬 Generar Video {viz_mode}"):
+                if st.button(f"🎬 Generar Video {viz_mode}", key="gen_vid_btn"):
                     st.session_state.video_result = None
                     frames_list = []
                     pool = [s for s in sorted(all_scenes, key=lambda x: x.datetime) if s.properties.get("custom_nodata_pct", 0.0) <= video_max_nodata]
@@ -521,7 +540,7 @@ if bbox and search_allowed:
 
                 if st.session_state.video_result is not None:
                     st.video(st.session_state.video_result, autoplay=True)
-                    st.download_button("📥 Descargar MP4", st.session_state.video_result, "serie.mp4")
+                    st.download_button("📥 Descargar MP4", st.session_state.video_result, "serie.mp4", key="dl_vid")
 
 st.markdown("---")
 st.caption("Ing. Luis A. Carnaghi (lcarnaghi@gmail.com) - Creador.")
