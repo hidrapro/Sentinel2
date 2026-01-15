@@ -345,8 +345,8 @@ if map_data and map_data.get('all_drawings'):
     lats = [c[1] for c in coords]
     
     if max(lons) - min(lons) > 300:
-        west = max([l l for l in lons if l < 0])
-        east = min([l l for l in lons if l > 0])
+        west = max([l for l in lons if l < 0])
+        east = min([l for l in lons if l > 0])
         bbox = [west, min(lats), east, max(lats)]
     else:
         bbox = [min(lons), min(lats), max(lons), max(lats)]
