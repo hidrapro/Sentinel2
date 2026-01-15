@@ -172,24 +172,9 @@ SAT_CONFIG = {
         "min_year": 1999,
         "max_year": datetime.now().year
     },
-    "Landsat 5": {
+    "Landsat 4/5": {
         "collection": "landsat-c2-l2",
-        "platform": ["landsat-5"],
-        "viz": {
-            "Color Natural": ["red", "green", "blue"],
-            "Agua-Tierra": ["nir08", "swir16", "red"]
-        },
-        "res": 30,
-        "tile_key": "landsat:wrs_path",
-        "cloud_key": "eo:cloud_cover",
-        "scale": 0.0000275,
-        "offset": -0.2,
-        "min_year": 1984,
-        "max_year": 2013
-    },
-    "Landsat 4": {
-        "collection": "landsat-c2-l2",
-        "platform": ["landsat-4"],
+        "platform": ["landsat-4", "landsat-5"],
         "viz": {
             "Color Natural": ["red", "green", "blue"],
             "Agua-Tierra": ["nir08", "swir16", "red"]
@@ -200,367 +185,306 @@ SAT_CONFIG = {
         "scale": 0.0000275,
         "offset": -0.2,
         "min_year": 1982,
-        "max_year": 1993
-    },
-    "Landsat 1-3 (MSS)": {
-        "collection": "landsat-c2-l1",
-        "platform": ["landsat-1", "landsat-2", "landsat-3"],
-        "viz": {
-            "Color Natural": ["red", "green", "blue"],
-            "Agua-Tierra": ["nir08", "red", "green"]
-        },
-        "res": 60,
-        "tile_key": "landsat:wrs_path",
-        "cloud_key": "eo:cloud_cover",
-        "scale": 1.0, 
-        "offset": 0.0,
-        "min_year": 1972,
-        "max_year": 1983
+        "max_year": 2012
     }
 }
 
-# --- FUNCIONES AUXILIARES ---
-def get_utm_epsg(lon, lat):
-    lon = ((lon + 180) % 360) - 180
-    utm_zone = int((lon + 180) / 6) + 1
-    epsg_code = (32600 if lat >= 0 else 32700) + utm_zone
-    return epsg_code
+def normalize_image_robust(img_np, sigma, perc_high, scale, offset):
+    arr = (img_np * scale + offset).astype(np.float32)
+    arr_valid = arr[np.isfinite(arr) & (arr > -9999)]
+    if len(arr_valid) == 0: return np.zeros((*img_np.shape[:2], 3), dtype=np.uint8)
+    mean_v, std_v = arr_valid.mean(), arr_valid.std()
+    low_cut, high_cut = max(mean_v - sigma * std_v, 0), min(np.percentile(arr_valid, perc_high), mean_v + 3 * std_v)
+    arr_clipped = np.clip((arr - low_cut) / (high_cut - low_cut + 1e-6), 0, 1)
+    return (arr_clipped * 255).astype(np.uint8)
+
+def add_text_to_image(pil_img, text):
+    draw = ImageDraw.Draw(pil_img)
+    font_size = int(pil_img.height * 0.04)
+    try:
+        font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", font_size)
+    except:
+        font = ImageFont.load_default()
+    left, top, right, bottom = draw.textbbox((0, 0), text, font=font)
+    text_w, text_h = right - left, bottom - top
+    x, y = 15, 15
+    pad = 8
+    draw.rectangle([x - pad, y - pad, x + text_w + pad, y + text_h + pad], fill=(0, 0, 0, 180))
+    draw.text((x, y), text, fill=(255, 255, 255), font=font)
+    return pil_img
 
 def check_nodata_fast(item, bbox, epsg, asset_name):
-    """Calcula el % de pixeles negros/sin datos en el recorte exacto"""
     try:
-        width_m = (bbox[2] - bbox[0]) * 111320 * np.cos(np.radians(bbox[1]))
-        res_check = max(10, width_m / 50) 
-        
-        ds = stackstac.stack(item, assets=[asset_name], bounds_latlon=bbox, epsg=epsg, resolution=res_check).squeeze().compute()
-        data = ds.values
-        nodata_mask = (data <= 0) | np.isnan(data)
-        percentage = (np.sum(nodata_mask) / data.size) * 100
-        return float(percentage)
-    except Exception:
+        sub = stackstac.stack(item, assets=[asset_name], bounds_latlon=bbox, epsg=epsg, resolution=200).squeeze().compute()
+        arr = sub.values
+        total_pix = arr.size
+        valid_pix = np.sum(np.isfinite(arr) & (arr > -9000))
+        return ((total_pix - valid_pix) / total_pix * 100) if total_pix > 0 else 100.0
+    except:
         return 0.0
 
-def normalize_image_robust(img_arr, p_low=2, p_high=98, scale=1.0, offset=0.0):
-    img = img_arr * scale + offset
-    if img.ndim == 3:
-        out = np.zeros_like(img, dtype=np.uint8)
-        for i in range(img.shape[2]):
-            band = img[:, :, i]
-            valid = band[(~np.isnan(band)) & (band > -0.5)]
-            if valid.size > 100:
-                vmin, vmax = np.percentile(valid, [p_low, p_high])
-                if vmax > vmin:
-                    band_norm = (band - vmin) / (vmax - vmin) * 255
-                    out[:, :, i] = np.clip(band_norm, 0, 255).astype(np.uint8)
-        return out
-    else:
-        valid = img[(~np.isnan(img)) & (img > -0.5)]
-        if valid.size > 100:
-            vmin, vmax = np.percentile(valid, [p_low, p_high])
-            if vmax > vmin:
-                img_norm = np.clip((img - vmin) / (vmax - vmin) * 255, 0, 255).astype(np.uint8)
-                return np.stack([img_norm]*3, axis=-1)
-        return np.zeros((*img.shape, 3), dtype=np.uint8)
-
-def add_text_to_image(img, text):
-    draw = ImageDraw.Draw(img)
-    font_size = int(img.width * 0.05)
-    font = None
-    font_paths = ["/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", "arial.ttf"]
-    for path in font_paths:
-        try: font = ImageFont.truetype(path, font_size); break
-        except: continue
-    if font is None: font = ImageFont.load_default()
-    bbox_txt = draw.textbbox((0, 0), text, font=font)
-    tw, th = bbox_txt[2] - bbox_txt[0], bbox_txt[3] - bbox_txt[1]
-    x_pos, y_pos = (img.width - tw) // 2, img.height - th - int(font_size * 0.3)
-    draw.rectangle([(x_pos-5, y_pos-5), (x_pos+tw+5, y_pos+th+5)], fill=(0,0,0,180))
-    draw.text((x_pos, y_pos), text, fill=(255, 255, 255), font=font)
-    return img
-
-# --- SIDEBAR ---
+# --- BARRA LATERAL ---
 with st.sidebar:
-    st.subheader("🛰️ Plataforma")
-    sat_choice = st.selectbox(
-        "Satélite", 
-        options=list(SAT_CONFIG.keys()), 
-        label_visibility="collapsed",
-        format_func=lambda x: f"{x} ({SAT_CONFIG[x]['min_year']} - {SAT_CONFIG[x]['max_year']})"
-    )
+    st.markdown("### ⚙️ Configuración general")
+    sat_choice = st.radio("🛰️ Misión:", list(SAT_CONFIG.keys()), index=0, horizontal=False)
     conf = SAT_CONFIG[sat_choice]
-    
-    # Se establece index=1 para que "Agua-Tierra" sea el valor por defecto
-    viz_mode = st.radio("Visualización", options=list(conf["viz"].keys()), index=1, horizontal=True)
+    viz_mode = st.selectbox("🎨 Visualización:", list(conf["viz"].keys()))
     selected_assets = conf["viz"][viz_mode]
 
     st.markdown("---")
-    st.subheader("📅 Tiempo y Nubes")
-    meses = ["Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio", "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"]
-    c1, c2 = st.columns(2)
-    with c1: mes_nombre = st.selectbox("Mes", meses, index=datetime.now().month - 1)
-    with c2: anio = st.number_input("Año", min_value=conf["min_year"], max_value=conf["max_year"], value=conf["max_year"])
-    
-    mes_num = meses.index(mes_nombre) + 1
-    fecha_referencia = datetime(anio, mes_num, 1)
-    max_cloud = st.slider("Nubosidad máx. (%)", 0, 100, 15)
-    max_search_items = st.slider("Imágenes a buscar", 2, 60, 20)
-    
-    st.markdown("---")
-    st.subheader("⚙️ Salida")
-    map_style = st.selectbox("Estilo Mapa", ["OpenStreetMap", "Satélite (Esri)", "Topográfico (OpenTopo)"])
-    c3, c4 = st.columns(2)
-    with c3: res_final = st.number_input("Res. (m)", value=conf["res"], min_value=10)
-    with c4: percentil_alto = st.number_input("% Alto", value=98, min_value=50, max_value=100)
-    formato_descarga = st.radio("Formato de descarga:", ["GeoTIFF (GIS)", "JPG (Visual)", "KMZ (Google Earth)", "Video MP4", "Todos"], horizontal=True)
+    st.markdown("### 📅 Rango temporal")
+    year_min = st.number_input("Año desde", min_value=conf["min_year"], max_value=conf["max_year"], value=conf["max_year"]-1, step=1)
+    year_max = st.number_input("Año hasta", min_value=conf["min_year"], max_value=conf["max_year"], value=conf["max_year"], step=1)
+    max_cloud = st.slider("☁️ Nubosidad máx (%)", 0, 100, 20)
+    exclude_dates = st.text_input("Excluir fechas (DD/MM/YYYY separadas por coma):", "").split(",")
+    exclude_dates = [d.strip() for d in exclude_dates if d.strip()]
 
-    if 'scenes_before' in st.session_state:
-        with st.expander("🔍 Filtro Manual de Fechas"):
-            all_candidates = st.session_state.get('scenes_before', []) + st.session_state.get('scenes_after', [])
-            all_dates = sorted(list(set([s.datetime.strftime('%d/%m/%Y') for s in all_candidates])))
-            exclude_dates = st.multiselect("Ignorar estas fechas:", options=all_dates)
-    else:
-        exclude_dates = []
+    st.markdown("---")
+    st.markdown("### 🖼️ Imágenes HD")
+    res_mult = st.selectbox("Resolución:", [("Normal (1x)", 1), ("Alta (0.5x)", 0.5), ("Ultra (0.25x)", 0.25)], format_func=lambda x: x[0])
+    res_final = int(conf["res"] * res_mult[1])
+    percentil_alto = st.slider("Brillo máx (percentil)", 90, 100, 98)
+    formato_descarga = st.selectbox("Formato:", ["GeoTIFF", "JPG", "KMZ", "Todos", "Video MP4"])
 
     if "Video" in formato_descarga or formato_descarga == "Todos":
-        with st.expander("🎬 Configuración Video"):
-            video_fps = st.slider("FPS", 1, 5, 2)
-            video_max_images = st.slider("Máx. frames", 3, 60, 15)
-            video_max_nodata = st.slider("Máx. Sin Datos (%)", 0, 40, 5)
+        st.markdown("---")
+        st.markdown("### 🎬 Opciones de video")
+        video_fps = st.slider("FPS:", 1, 10, 3)
+        video_max_images = st.slider("Máx imágenes:", 5, 50, 20)
+        video_max_nodata = st.slider("Máx sin-datos (%)", 0.0, 20.0, 5.0, 0.5)
 
-# --- MAPA ---
-st.subheader("1. Área de Interés (AOI)")
-st.markdown('<span class="instruction-text">Click sobre la herramienta de dibujo de rectangulo AOI, icono cuadrado.</span>', unsafe_allow_html=True)
+# --- MAPA INTERACTIVO ---
+st.markdown("### 🗺️ Área de interés")
+st.markdown('<span class="instruction-text">Dibuja un rectángulo en el mapa para buscar imágenes.</span>', unsafe_allow_html=True)
 
-tile_urls = {"OpenStreetMap": "OpenStreetMap", "Satélite (Esri)": "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}", "Topográfico (OpenTopo)": "https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png"}
-m = folium.Map(location=[-35.444, -60.884], zoom_start=13, tiles=tile_urls[map_style] if map_style == "OpenStreetMap" else tile_urls[map_style], attr="Tiles &copy; Esri / OpenTopoMap" if map_style != "OpenStreetMap" else None)
+center_lat, center_lon = -34.6, -60.8
+zoom_inicio = 7
+m = folium.Map(location=[center_lat, center_lon], zoom_start=zoom_inicio, tiles="Esri.WorldImagery", attr="Esri")
+Draw(export=False, draw_options={'polyline': False, 'polygon': False, 'circle': False, 'marker': False, 'circlemarker': False}, edit_options={'edit': False}).add_to(m)
 LocateControl().add_to(m)
-Draw(draw_options={'polyline':False, 'polygon':False, 'circle':False, 'marker':False, 'circlemarker':False, 'rectangle':True}).add_to(m)
-map_data = st_folium(m, use_container_width=True, height=400, key="main_map")
-
-bbox = None
-search_allowed = True
-if map_data and map_data.get('all_drawings'):
-    coords = map_data['all_drawings'][-1]['geometry']['coordinates'][0]
-    lons_raw = [c[0] for c in coords]
-    lons = [((lon + 180) % 360) - 180 for lon in lons_raw]
-    lats = [c[1] for c in coords]
-    
-    if max(lons) - min(lons) > 300:
-        west = max([l for l in lons if l < 0])
-        east = min([l for l in lons if l > 0])
-        bbox = [west, min(lats), east, max(lats)]
-    else:
-        bbox = [min(lons), min(lats), max(lons), max(lats)]
-        
-    width_km = abs(bbox[2] - bbox[0]) * 111.32 * np.cos(np.radians((bbox[1]+bbox[3])/2))
-    height_km = abs(bbox[3] - bbox[1]) * 110.57
-    area_km2 = width_km * height_km
-    
-    if area_km2 > 1000:
-        st.error(f"⚠️ El área seleccionada ({area_km2:.1f} km²) es demasiado grande. Máximo 1000 km².")
-        search_allowed = False
-    else:
-        st.info(f"📏 Área seleccionada: {area_km2:.1f} km²")
-        
-    epsg_code = get_utm_epsg((min(lons)+max(lons))/2, (min(lats)+max(lats))/2)
+map_data = st_folium(m, width=None, height=400, returned_objects=["last_active_drawing"])
 
 # --- LÓGICA DE BÚSQUEDA ---
-if bbox and search_allowed:
-    if st.session_state.search_count is None and not st.session_state.searching:
-        st.success("✅ ¡Área válida! Haz clic abajo para buscar.")
-    
-    col_btn, col_count = st.columns([0.2, 0.8])
-    with col_btn:
-        needs_highlight = st.session_state.search_count is None and not st.session_state.searching
-        if needs_highlight: st.markdown('<div class="highlight-search">', unsafe_allow_html=True)
-        btn_text = "Buscando..." if st.session_state.searching else "🔍 Buscar Imágenes"
-        if st.button(btn_text, disabled=st.session_state.searching, key="search_btn", use_container_width=True):
-            st.session_state.searching = True
-            st.session_state.video_result = None
-            st.session_state.hd_file_ready = None 
-            st.rerun()
-        if needs_highlight: st.markdown('</div>', unsafe_allow_html=True)
+drawing = map_data.get("last_active_drawing")
+if drawing and drawing.get("geometry") and drawing["geometry"]["type"] == "Rectangle":
+    coords = drawing["geometry"]["coordinates"][0]
+    lons = [p[0] for p in coords]
+    lats = [p[1] for p in coords]
+    bbox = (min(lons), min(lats), max(lons), max(lats))
+    epsg_code = 32720 if (min(lats) + max(lats)) / 2 < 0 else 32620
+    fecha_referencia = datetime(year_max, 12, 31)
 
     if st.session_state.searching:
-        try:
-            catalog = pystac_client.Client.open("https://planetarycomputer.microsoft.com/api/stac/v1", modifier=planetary_computer.sign_inplace)
-            half_items = max_search_items // 2
-            query_params = {conf["cloud_key"]: {"lt": max_cloud}}
-            if pool_val := conf.get("platform"): query_params["platform"] = {"in": pool_val}
-            f_past_start = fecha_referencia - timedelta(days=365)
-            f_future_end = fecha_referencia + timedelta(days=365)
+        st.info("⏳ Buscando...")
+    else:
+        col_search, col_count = st.columns([1, 3])
+        with col_search:
+            search_btn_html = '<div class="highlight-search">'
+            if st.button("🔍 Buscar", key="search_btn"):
+                search_btn_html += '</div>'
+                st.session_state.searching = True
+                st.session_state.search_count = None
+                st.rerun()
 
-            search_past = catalog.search(
-                collections=[conf["collection"]], bbox=bbox,
-                datetime=f"{f_past_start.isoformat()}/{fecha_referencia.isoformat()}",
-                query=query_params, sortby=[{"field": "properties.datetime", "direction": "desc"}],
-                max_items=max(1, half_items)
-            )
-            search_future = catalog.search(
-                collections=[conf["collection"]], bbox=bbox,
-                datetime=f"{fecha_referencia.isoformat()}/{f_future_end.isoformat()}",
-                query=query_params, sortby=[{"field": "properties.datetime", "direction": "asc"}],
-                max_items=max(1, max_search_items - half_items)
-            )
-            
-            all_items = list(search_past.items()) + list(search_future.items())
-            if all_items:
-                with st.status("Analizando cobertura...") as status:
-                    for i, item in enumerate(all_items):
-                        status.update(label=f"Chequeando {i+1}/{len(all_items)}...")
-                        check_asset = selected_assets[0]
-                        if check_asset not in item.assets: check_asset = list(item.assets.keys())[0]
-                        pct = check_nodata_fast(item, bbox, epsg_code, check_asset)
-                        item.properties["custom_nodata_pct"] = pct
-                st.session_state['scenes_before'] = [i for i in all_items if i.datetime.replace(tzinfo=None) < fecha_referencia]
-                st.session_state['scenes_after'] = [i for i in all_items if i.datetime.replace(tzinfo=None) >= fecha_referencia]
-                st.session_state.search_count = len(all_items)
-            else:
+        if st.session_state.searching:
+            try:
+                catalog = pystac_client.Client.open("https://planetarycomputer.microsoft.com/api/stac/v1", modifier=planetary_computer.sign_inplace)
+                query_base = {"eo:cloud_cover": {"lt": max_cloud}}
+                if conf["platform"]: query_base["platform"] = {"in": conf["platform"]}
+                
+                search_past = catalog.search(collections=[conf["collection"]], bbox=bbox, datetime=f"{year_min}-01-01/{fecha_referencia.strftime('%Y-%m-%d')}", query=query_base)
+                search_future = catalog.search(collections=[conf["collection"]], bbox=bbox, datetime=f"{fecha_referencia.strftime('%Y-%m-%d')}/{year_max}-12-31", query=query_base)
+                
+                all_items = list(search_past.items()) + list(search_future.items())
+                if all_items:
+                    with st.status("Analizando cobertura...") as status:
+                        for i, item in enumerate(all_items):
+                            status.update(label=f"Chequeando {i+1}/{len(all_items)}...")
+                            check_asset = selected_assets[0]
+                            if check_asset not in item.assets: check_asset = list(item.assets.keys())[0]
+                            pct = check_nodata_fast(item, bbox, epsg_code, check_asset)
+                            item.properties["custom_nodata_pct"] = pct
+                    st.session_state['scenes_before'] = [i for i in all_items if i.datetime.replace(tzinfo=None) < fecha_referencia]
+                    st.session_state['scenes_after'] = [i for i in all_items if i.datetime.replace(tzinfo=None) >= fecha_referencia]
+                    st.session_state.search_count = len(all_items)
+                else:
+                    st.session_state.search_count = 0
+            except Exception as e:
+                st.error(f"Error: {e}")
                 st.session_state.search_count = 0
-        except Exception as e:
-            st.error(f"Error: {e}")
-            st.session_state.search_count = 0
-        finally:
-            st.session_state.searching = False
-            st.rerun()
+            finally:
+                st.session_state.searching = False
+                st.rerun()
 
-    if st.session_state.search_count is not None:
-        with col_count:
-            if st.session_state.search_count > 0:
-                st.markdown(f'<div class="result-text">✨ {st.session_state.search_count} imágenes ({viz_mode}) encontradas.</div>', unsafe_allow_html=True)
+        if st.session_state.search_count is not None:
+            with col_count:
+                if st.session_state.search_count > 0:
+                    st.markdown(f'<div class="result-text">✨ {st.session_state.search_count} imágenes ({viz_mode}) encontradas.</div>', unsafe_allow_html=True)
 
-    # --- DESPLIEGUE DE RESULTADOS ---
-    if 'scenes_before' in st.session_state:
-        full_pool = st.session_state['scenes_before'] + st.session_state['scenes_after']
-        all_scenes = [s for s in full_pool if s.datetime.strftime('%d/%m/%Y') not in exclude_dates]
-        
-        # Ordenar por fecha descendente (más nueva primero)
-        all_scenes.sort(key=lambda x: x.datetime, reverse=True)
-        
-        if all_scenes:
-            if formato_descarga != "Video MP4":
-                scene_opts = {}
-                for i, s in enumerate(all_scenes):
-                    pct_val = s.properties.get("custom_nodata_pct", 0.0)
-                    date_str = s.datetime.strftime('%d/%m/%Y')
-                    clouds = s.properties[conf['cloud_key']]
-                    label = f"📅 {date_str} | ☁️ {clouds:.1f}% | ⬛ Sin Datos: {pct_val:.1f}%"
-                    if pct_val > 5.0: label += " ⚠️"
-                    scene_opts[label] = i
-                
-                idx_name = st.selectbox("Imagen específica:", list(scene_opts.keys()))
-                item = all_scenes[scene_opts[idx_name]]
-                
-                if st.session_state.current_scene_id != item.id:
-                    st.session_state.preview_image = None
-                    st.session_state.current_scene_id = item.id
-                    st.session_state.hd_file_ready = None 
-
-                col_btn1, col_btn2 = st.columns(2)
-                with col_btn1:
-                    if st.button("🖼️ Vista Previa", key="prev_btn", disabled=st.session_state.is_generating_preview):
-                        st.session_state.is_generating_preview = True
-                        st.rerun()
-                    if st.session_state.is_generating_preview:
-                        try:
-                            with st.spinner("Procesando..."):
-                                data_raw = stackstac.stack(item, assets=selected_assets, bounds_latlon=bbox, epsg=epsg_code, resolution=conf["res"]*2, resampling=Resampling.cubic).squeeze().compute()
-                                img_np = np.moveaxis(data_raw.sel(band=selected_assets).values, 0, -1)
-                                st.session_state.preview_image = normalize_image_robust(img_np, 2, percentil_alto, conf["scale"], conf["offset"])
-                        finally:
-                            st.session_state.is_generating_preview = False
-                            st.rerun()
-                    if st.session_state.preview_image is not None:
-                        st.image(st.session_state.preview_image, use_container_width=True, caption=f"{viz_mode}")
-
-                with col_btn2:
-                    if st.session_state.hd_file_ready is None:
-                        if st.button("🚀 Generar Archivos HD", key="gen_hd_btn"):
-                            with st.status("Preparando HD..."):
-                                data_raw = stackstac.stack(item, assets=selected_assets, bounds_latlon=bbox, epsg=epsg_code, resolution=res_final, resampling=Resampling.cubic).squeeze()
-                                data_final = data_raw.sel(band=selected_assets)
-                                fname = f"{sat_choice.replace(' ', '_')}_{item.datetime.strftime('%Y%m%d')}_{viz_mode.replace(' ','')}"
-                                
-                                results = {}
-                                if "GeoTIFF" in formato_descarga or formato_descarga == "Todos":
-                                    with tempfile.NamedTemporaryFile(suffix='.tif', delete=False) as tmp:
-                                        data_final.rio.to_raster(tmp.name)
-                                        with open(tmp.name, 'rb') as f: results['tif'] = (f.read(), f"{fname}.tif")
-                                
-                                if "JPG" in formato_descarga or formato_descarga == "Todos":
-                                    img_8bit = normalize_image_robust(np.moveaxis(data_final.compute().values, 0, -1), 2, percentil_alto, conf["scale"], conf["offset"])
-                                    buf = io.BytesIO()
-                                    Image.fromarray(img_8bit).save(buf, format='JPEG', quality=95)
-                                    results['jpg'] = (buf.getvalue(), f"{fname}.jpg")
-                                
-                                if "KMZ" in formato_descarga or formato_descarga == "Todos":
-                                    data_4326 = data_final.rio.reproject("EPSG:4326", resampling=Resampling.bilinear)
-                                    img_np = np.moveaxis(data_4326.compute().values, 0, -1)
-                                    img_8bit_kmz = normalize_image_robust(img_np, 2, percentil_alto, conf["scale"], conf["offset"])
-                                    bounds_4326 = data_4326.rio.bounds()
-                                    west_kmz, south_kmz, east_kmz, north_kmz = bounds_4326
-                                    buf_jpg = io.BytesIO()
-                                    Image.fromarray(img_8bit_kmz).save(buf_jpg, format='JPEG', quality=95)
-                                    kml_content = f"""<?xml version="1.0" encoding="UTF-8"?><kml xmlns="http://www.opengis.net/kml/2.2"><GroundOverlay><name>{fname}</name><Icon><href>overlay.jpg</href></Icon><LatLonBox><north>{north_kmz}</north><south>{south_kmz}</south><east>{east_kmz}</east><west>{west_kmz}</west></LatLonBox></GroundOverlay></kml>"""
-                                    kmz_buf = io.BytesIO()
-                                    with zipfile.ZipFile(kmz_buf, "w") as zf:
-                                        zf.writestr("doc.kml", kml_content)
-                                        zf.writestr("overlay.jpg", buf_jpg.getvalue())
-                                    results['kmz'] = (kmz_buf.getvalue(), f"{fname}.kmz")
-                                
-                                st.session_state.hd_file_ready = results
-                                st.rerun()
-                    else:
-                        st.success("✅ ¡Archivos HD listos!")
-                        for key, (data, name) in st.session_state.hd_file_ready.items():
-                            st.download_button(f"📥 Descargar {name}", data, name, key=f"dl_{key}", use_container_width=True)
-                        if st.button("🔄 Generar otra vez", key="reset_hd"):
-                            st.session_state.hd_file_ready = None
-                            st.rerun()
-
-            if "Video" in formato_descarga or formato_descarga == "Todos":
-                st.markdown("---")
-                if st.button(f"🎬 Generar Video {viz_mode}", key="gen_vid_btn"):
-                    st.session_state.video_result = None
-                    frames_list = []
-                    pool = [s for s in sorted(all_scenes, key=lambda x: x.datetime) if s.properties.get("custom_nodata_pct", 0.0) <= video_max_nodata]
+        # --- DESPLIEGUE DE RESULTADOS ---
+        if 'scenes_before' in st.session_state:
+            full_pool = st.session_state['scenes_before'] + st.session_state['scenes_after']
+            all_scenes = [s for s in full_pool if s.datetime.strftime('%d/%m/%Y') not in exclude_dates]
+            
+            # Ordenar por fecha descendente (más nueva primero)
+            all_scenes.sort(key=lambda x: x.datetime, reverse=True)
+            
+            if all_scenes:
+                if formato_descarga != "Video MP4":
+                    scene_opts = {}
+                    for i, s in enumerate(all_scenes):
+                        pct_val = s.properties.get("custom_nodata_pct", 0.0)
+                        date_str = s.datetime.strftime('%d/%m/%Y')
+                        clouds = s.properties[conf['cloud_key']]
+                        label = f"📅 {date_str} | ☁️ {clouds:.1f}% | ⬛ Sin Datos: {pct_val:.1f}%"
+                        if pct_val > 5.0: label += " ⚠️"
+                        scene_opts[label] = i
                     
-                    if not pool:
-                        st.error(f"Sin imágenes que cumplan (Máx: {video_max_nodata}%).")
-                    else:
-                        with st.status("Generando frames...") as status:
-                            processed = 0
-                            for s in pool:
-                                if processed >= video_max_images: break
-                                try:
-                                    data_f = stackstac.stack(s, assets=selected_assets, bounds_latlon=bbox, epsg=epsg_code, resolution=conf["res"]*2, resampling=Resampling.cubic).squeeze().compute()
-                                    img_np = np.moveaxis(data_f.sel(band=selected_assets).values, 0, -1)
-                                    img_8bit = normalize_image_robust(img_np, 2, percentil_alto, conf["scale"], conf["offset"])
-                                    pil_img = Image.fromarray(img_8bit)
-                                    target_w = 1000
-                                    # Asegurar que el alto sea par para compatibilidad con Android
-                                    h_res = (int(pil_img.height * (target_w / pil_img.width)) // 2) * 2
-                                    pil_img = pil_img.resize((target_w, h_res), Image.Resampling.LANCZOS)
-                                    frames_list.append((s.datetime, add_text_to_image(pil_img, s.datetime.strftime('%d/%m/%Y'))))
-                                    processed += 1
-                                except: continue
-                            
-                            if frames_list:
-                                status.update(label="Ensamblando...", state="running")
-                                frames_list.sort(key=lambda x: x[0])
-                                images_only = [np.array(f[1]) for f in frames_list]
-                                with tempfile.NamedTemporaryFile(suffix='.mp4', delete=False) as tmp:
-                                    # pixelformat='yuv420p' es fundamental para compatibilidad móvil
-                                    writer = imageio.get_writer(tmp.name, fps=video_fps, codec='libx264', quality=8, pixelformat='yuv420p')
-                                    for f in images_only: writer.append_data(f)
-                                    writer.close()
-                                    with open(tmp.name, 'rb') as f: st.session_state.video_result = f.read()
-                                status.update(label="✅ Éxito", state="complete")
+                    idx_name = st.selectbox("Imagen específica:", list(scene_opts.keys()))
+                    item = all_scenes[scene_opts[idx_name]]
+                    
+                    if st.session_state.current_scene_id != item.id:
+                        st.session_state.preview_image = None
+                        st.session_state.current_scene_id = item.id
+                        st.session_state.hd_file_ready = None 
+
+                    col_btn1, col_btn2 = st.columns(2)
+                    with col_btn1:
+                        if st.button("🖼️ Vista Previa", key="prev_btn", disabled=st.session_state.is_generating_preview):
+                            st.session_state.is_generating_preview = True
+                            st.rerun()
+                        if st.session_state.is_generating_preview:
+                            try:
+                                with st.spinner("Procesando..."):
+                                    data_raw = stackstac.stack(item, assets=selected_assets, bounds_latlon=bbox, epsg=epsg_code, resolution=conf["res"]*2, resampling=Resampling.cubic).squeeze().compute()
+                                    img_np = np.moveaxis(data_raw.sel(band=selected_assets).values, 0, -1)
+                                    st.session_state.preview_image = normalize_image_robust(img_np, 2, percentil_alto, conf["scale"], conf["offset"])
+                            finally:
+                                st.session_state.is_generating_preview = False
+                                st.rerun()
+                        if st.session_state.preview_image is not None:
+                            st.image(st.session_state.preview_image, use_container_width=True, caption=f"{viz_mode}")
+
+                    with col_btn2:
+                        if st.session_state.hd_file_ready is None:
+                            if st.button("🚀 Generar Archivos HD", key="gen_hd_btn"):
+                                with st.status("Preparando HD..."):
+                                    data_raw = stackstac.stack(item, assets=selected_assets, bounds_latlon=bbox, epsg=epsg_code, resolution=res_final, resampling=Resampling.cubic).squeeze()
+                                    data_final = data_raw.sel(band=selected_assets)
+                                    fname = f"{sat_choice.replace(' ', '_')}_{item.datetime.strftime('%Y%m%d')}_{viz_mode.replace(' ','')}"
+                                    
+                                    results = {}
+                                    if "GeoTIFF" in formato_descarga or formato_descarga == "Todos":
+                                        with tempfile.NamedTemporaryFile(suffix='.tif', delete=False) as tmp:
+                                            data_final.rio.to_raster(tmp.name)
+                                            with open(tmp.name, 'rb') as f: results['tif'] = (f.read(), f"{fname}.tif")
+                                    
+                                    if "JPG" in formato_descarga or formato_descarga == "Todos":
+                                        img_8bit = normalize_image_robust(np.moveaxis(data_final.compute().values, 0, -1), 2, percentil_alto, conf["scale"], conf["offset"])
+                                        buf = io.BytesIO()
+                                        Image.fromarray(img_8bit).save(buf, format='JPEG', quality=95)
+                                        results['jpg'] = (buf.getvalue(), f"{fname}.jpg")
+                                    
+                                    if "KMZ" in formato_descarga or formato_descarga == "Todos":
+                                        data_4326 = data_final.rio.reproject("EPSG:4326", resampling=Resampling.bilinear)
+                                        img_np = np.moveaxis(data_4326.compute().values, 0, -1)
+                                        img_8bit_kmz = normalize_image_robust(img_np, 2, percentil_alto, conf["scale"], conf["offset"])
+                                        bounds_4326 = data_4326.rio.bounds()
+                                        west_kmz, south_kmz, east_kmz, north_kmz = bounds_4326
+                                        buf_jpg = io.BytesIO()
+                                        Image.fromarray(img_8bit_kmz).save(buf_jpg, format='JPEG', quality=95)
+                                        kml_content = f"""<?xml version="1.0" encoding="UTF-8"?><kml xmlns="http://www.opengis.net/kml/2.2"><GroundOverlay><n>{fname}</n><Icon><href>overlay.jpg</href></Icon><LatLonBox><north>{north_kmz}</north><south>{south_kmz}</south><east>{east_kmz}</east><west>{west_kmz}</west></LatLonBox></GroundOverlay></kml>"""
+                                        kmz_buf = io.BytesIO()
+                                        with zipfile.ZipFile(kmz_buf, "w") as zf:
+                                            zf.writestr("doc.kml", kml_content)
+                                            zf.writestr("overlay.jpg", buf_jpg.getvalue())
+                                        results['kmz'] = (kmz_buf.getvalue(), f"{fname}.kmz")
+                                    
+                                    st.session_state.hd_file_ready = results
+                                    st.rerun()
+                        else:
+                            st.success("✅ ¡Archivos HD listos!")
+                            for key, (data, name) in st.session_state.hd_file_ready.items():
+                                st.download_button(f"📥 Descargar {name}", data, name, key=f"dl_{key}", use_container_width=True)
+                            if st.button("🔄 Generar otra vez", key="reset_hd"):
+                                st.session_state.hd_file_ready = None
                                 st.rerun()
 
-                if st.session_state.video_result is not None:
-                    st.video(st.session_state.video_result, autoplay=True)
-                    st.download_button("📥 Descargar MP4", st.session_state.video_result, "serie.mp4", key="dl_vid")
+                if "Video" in formato_descarga or formato_descarga == "Todos":
+                    st.markdown("---")
+                    if st.button(f"🎬 Generar Video {viz_mode}", key="gen_vid_btn"):
+                        st.session_state.video_result = None
+                        frames_list = []
+                        pool = [s for s in sorted(all_scenes, key=lambda x: x.datetime) if s.properties.get("custom_nodata_pct", 0.0) <= video_max_nodata]
+                        
+                        if not pool:
+                            st.error(f"Sin imágenes que cumplan (Máx: {video_max_nodata}%).")
+                        else:
+                            with st.status("Generando frames...") as status:
+                                processed = 0
+                                for s in pool:
+                                    if processed >= video_max_images: break
+                                    try:
+                                        data_f = stackstac.stack(s, assets=selected_assets, bounds_latlon=bbox, epsg=epsg_code, resolution=conf["res"]*2, resampling=Resampling.cubic).squeeze().compute()
+                                        img_np = np.moveaxis(data_f.sel(band=selected_assets).values, 0, -1)
+                                        img_8bit = normalize_image_robust(img_np, 2, percentil_alto, conf["scale"], conf["offset"])
+                                        pil_img = Image.fromarray(img_8bit)
+                                        
+                                        # MEJORA CRÍTICA PARA ANDROID:
+                                        # 1. Ancho debe ser divisible por 2
+                                        # 2. Alto debe ser divisible por 2
+                                        target_w = 1280  # Cambio a resolución más estándar
+                                        aspect_ratio = pil_img.width / pil_img.height
+                                        target_h = int(target_w / aspect_ratio)
+                                        
+                                        # Asegurar que ambas dimensiones sean divisibles por 2
+                                        target_w = (target_w // 2) * 2
+                                        target_h = (target_h // 2) * 2
+                                        
+                                        pil_img = pil_img.resize((target_w, target_h), Image.Resampling.LANCZOS)
+                                        frames_list.append((s.datetime, add_text_to_image(pil_img, s.datetime.strftime('%d/%m/%Y'))))
+                                        processed += 1
+                                    except: 
+                                        continue
+                                
+                                if frames_list:
+                                    status.update(label="Ensamblando...", state="running")
+                                    frames_list.sort(key=lambda x: x[0])
+                                    images_only = [np.array(f[1]) for f in frames_list]
+                                    
+                                    with tempfile.NamedTemporaryFile(suffix='.mp4', delete=False) as tmp:
+                                        # CONFIGURACIÓN CRÍTICA PARA COMPATIBILIDAD ANDROID:
+                                        # - codec='libx264': codec H.264 (compatible con casi todos los dispositivos)
+                                        # - pixelformat='yuv420p': formato de color más compatible
+                                        # - macro_block_size=2: asegura dimensiones válidas
+                                        # - quality=8: buena calidad (escala 1-10)
+                                        # - ffmpeg_params: parámetros adicionales para mejorar compatibilidad
+                                        writer = imageio.get_writer(
+                                            tmp.name, 
+                                            fps=video_fps, 
+                                            codec='libx264',
+                                            quality=8,
+                                            pixelformat='yuv420p',
+                                            macro_block_size=2,
+                                            ffmpeg_params=[
+                                                '-preset', 'medium',      # Balance velocidad/compresión
+                                                '-movflags', '+faststart', # Permite reproducción antes de descarga completa
+                                                '-pix_fmt', 'yuv420p'     # Redundante pero crítico para Android
+                                            ]
+                                        )
+                                        for f in images_only: 
+                                            writer.append_data(f)
+                                        writer.close()
+                                        
+                                        with open(tmp.name, 'rb') as f: 
+                                            st.session_state.video_result = f.read()
+                                    
+                                    status.update(label="✅ Éxito", state="complete")
+                                    st.rerun()
+
+                    if st.session_state.video_result is not None:
+                        st.video(st.session_state.video_result, autoplay=True)
+                        st.download_button("📥 Descargar MP4", st.session_state.video_result, "serie.mp4", key="dl_vid")
 
 st.markdown("---")
 st.caption("Ing. Luis A. Carnaghi (lcarnaghi@gmail.com) - Creador.")
