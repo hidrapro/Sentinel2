@@ -537,7 +537,7 @@ if bbox and search_allowed:
                                     img_np = np.moveaxis(data_f.sel(band=selected_assets).values, 0, -1)
                                     img_8bit = normalize_image_robust(img_np, 2, percentil_alto, conf["scale"], conf["offset"])
                                     pil_img = Image.fromarray(img_8bit)
-                                    target_w = 1000
+                                    target_w = 720  # 720p es óptimo para WhatsApp
                                     # Asegurar que AMBAS dimensiones sean pares para compatibilidad con Android
                                     target_w = (target_w // 2) * 2
                                     h_res = (int(pil_img.height * (target_w / pil_img.width)) // 2) * 2
@@ -551,7 +551,7 @@ if bbox and search_allowed:
                                 frames_list.sort(key=lambda x: x[0])
                                 images_only = [np.array(f[1]) for f in frames_list]
                                 with tempfile.NamedTemporaryFile(suffix='.mp4', delete=False) as tmp:
-                                    # Configuración crítica para compatibilidad con Android
+                                    # Configuración optimizada para WhatsApp y Android
                                     writer = imageio.get_writer(
                                         tmp.name, 
                                         fps=video_fps, 
@@ -559,7 +559,14 @@ if bbox and search_allowed:
                                         quality=8, 
                                         pixelformat='yuv420p',
                                         macro_block_size=2,
-                                        ffmpeg_params=['-movflags', '+faststart']
+                                        ffmpeg_params=[
+                                            '-movflags', '+faststart',
+                                            '-profile:v', 'baseline',  # Perfil más compatible
+                                            '-level', '3.0',           # Nivel compatible con todos los dispositivos
+                                            '-maxrate', '2M',          # Bitrate máximo para WhatsApp
+                                            '-bufsize', '2M',          # Buffer size
+                                            '-an'                      # Sin audio (evita problemas)
+                                        ]
                                     )
                                     for f in images_only: writer.append_data(f)
                                     writer.close()
