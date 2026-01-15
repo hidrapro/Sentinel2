@@ -538,7 +538,8 @@ if bbox and search_allowed:
                                     img_8bit = normalize_image_robust(img_np, 2, percentil_alto, conf["scale"], conf["offset"])
                                     pil_img = Image.fromarray(img_8bit)
                                     target_w = 1000
-                                    # Asegurar que el alto sea par para compatibilidad con Android
+                                    # Asegurar que AMBAS dimensiones sean pares para compatibilidad con Android
+                                    target_w = (target_w // 2) * 2
                                     h_res = (int(pil_img.height * (target_w / pil_img.width)) // 2) * 2
                                     pil_img = pil_img.resize((target_w, h_res), Image.Resampling.LANCZOS)
                                     frames_list.append((s.datetime, add_text_to_image(pil_img, s.datetime.strftime('%d/%m/%Y'))))
@@ -550,8 +551,16 @@ if bbox and search_allowed:
                                 frames_list.sort(key=lambda x: x[0])
                                 images_only = [np.array(f[1]) for f in frames_list]
                                 with tempfile.NamedTemporaryFile(suffix='.mp4', delete=False) as tmp:
-                                    # pixelformat='yuv420p' es fundamental para compatibilidad móvil
-                                    writer = imageio.get_writer(tmp.name, fps=video_fps, codec='libx264', quality=8, pixelformat='yuv420p')
+                                    # Configuración crítica para compatibilidad con Android
+                                    writer = imageio.get_writer(
+                                        tmp.name, 
+                                        fps=video_fps, 
+                                        codec='libx264', 
+                                        quality=8, 
+                                        pixelformat='yuv420p',
+                                        macro_block_size=2,
+                                        ffmpeg_params=['-movflags', '+faststart']
+                                    )
                                     for f in images_only: writer.append_data(f)
                                     writer.close()
                                     with open(tmp.name, 'rb') as f: st.session_state.video_result = f.read()
