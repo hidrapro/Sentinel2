@@ -289,7 +289,7 @@ with st.sidebar:
     )
     conf = SAT_CONFIG[sat_choice]
     
-    # Se establece index=1 para que "Agua-Tierra" sea el valor por defecto (suponiendo que es la segunda opción en viz)
+    # Se establece index=1 para que "Agua-Tierra" sea el valor por defecto
     viz_mode = st.radio("Visualización", options=list(conf["viz"].keys()), index=1, horizontal=True)
     selected_assets = conf["viz"][viz_mode]
 
@@ -377,7 +377,7 @@ if bbox and search_allowed:
         if st.button(btn_text, disabled=st.session_state.searching, key="search_btn", use_container_width=True):
             st.session_state.searching = True
             st.session_state.video_result = None
-            st.session_state.hd_file_ready = None # Limpiar descargas previas
+            st.session_state.hd_file_ready = None 
             st.rerun()
         if needs_highlight: st.markdown('</div>', unsafe_allow_html=True)
 
@@ -434,7 +434,7 @@ if bbox and search_allowed:
         full_pool = st.session_state['scenes_before'] + st.session_state['scenes_after']
         all_scenes = [s for s in full_pool if s.datetime.strftime('%d/%m/%Y') not in exclude_dates]
         
-        # Se ordena all_scenes por fecha de forma descendente (más nueva primero)
+        # Ordenar por fecha descendente (más nueva primero)
         all_scenes.sort(key=lambda x: x.datetime, reverse=True)
         
         if all_scenes:
@@ -454,7 +454,7 @@ if bbox and search_allowed:
                 if st.session_state.current_scene_id != item.id:
                     st.session_state.preview_image = None
                     st.session_state.current_scene_id = item.id
-                    st.session_state.hd_file_ready = None # Reiniciar descarga al cambiar de escena
+                    st.session_state.hd_file_ready = None 
 
                 col_btn1, col_btn2 = st.columns(2)
                 with col_btn1:
@@ -464,7 +464,6 @@ if bbox and search_allowed:
                     if st.session_state.is_generating_preview:
                         try:
                             with st.spinner("Procesando..."):
-                                # Se usa Resampling.cubic (enum) para evitar el ValueError
                                 data_raw = stackstac.stack(item, assets=selected_assets, bounds_latlon=bbox, epsg=epsg_code, resolution=conf["res"]*2, resampling=Resampling.cubic).squeeze().compute()
                                 img_np = np.moveaxis(data_raw.sel(band=selected_assets).values, 0, -1)
                                 st.session_state.preview_image = normalize_image_robust(img_np, 2, percentil_alto, conf["scale"], conf["offset"])
@@ -475,68 +474,43 @@ if bbox and search_allowed:
                         st.image(st.session_state.preview_image, use_container_width=True, caption=f"{viz_mode}")
 
                 with col_btn2:
-                    # Lógica mejorada: Si el archivo no está listo, mostramos botón de proceso
                     if st.session_state.hd_file_ready is None:
                         if st.button("🚀 Generar Archivos HD", key="gen_hd_btn"):
                             with st.status("Preparando HD..."):
-                                # Se usa Resampling.cubic (enum) para asegurar compatibilidad
                                 data_raw = stackstac.stack(item, assets=selected_assets, bounds_latlon=bbox, epsg=epsg_code, resolution=res_final, resampling=Resampling.cubic).squeeze()
                                 data_final = data_raw.sel(band=selected_assets)
                                 fname = f"{sat_choice.replace(' ', '_')}_{item.datetime.strftime('%Y%m%d')}_{viz_mode.replace(' ','')}"
                                 
                                 results = {}
-                                # GeoTIFF nativo (en UTM)
                                 if "GeoTIFF" in formato_descarga or formato_descarga == "Todos":
                                     with tempfile.NamedTemporaryFile(suffix='.tif', delete=False) as tmp:
                                         data_final.rio.to_raster(tmp.name)
                                         with open(tmp.name, 'rb') as f: results['tif'] = (f.read(), f"{fname}.tif")
                                 
-                                # JPG visual (en UTM)
                                 if "JPG" in formato_descarga or formato_descarga == "Todos":
                                     img_8bit = normalize_image_robust(np.moveaxis(data_final.compute().values, 0, -1), 2, percentil_alto, conf["scale"], conf["offset"])
                                     buf = io.BytesIO()
                                     Image.fromarray(img_8bit).save(buf, format='JPEG', quality=95)
                                     results['jpg'] = (buf.getvalue(), f"{fname}.jpg")
                                 
-                                # KMZ especializado (Reproyectado a EPSG:4326 para Google Earth)
                                 if "KMZ" in formato_descarga or formato_descarga == "Todos":
-                                    # Para Google Earth, necesitamos re-proyectar a EPSG:4326 
                                     data_4326 = data_final.rio.reproject("EPSG:4326", resampling=Resampling.bilinear)
                                     img_np = np.moveaxis(data_4326.compute().values, 0, -1)
                                     img_8bit_kmz = normalize_image_robust(img_np, 2, percentil_alto, conf["scale"], conf["offset"])
-                                    
-                                    # Obtenemos los límites exactos de la imagen ya proyectada
                                     bounds_4326 = data_4326.rio.bounds()
                                     west_kmz, south_kmz, east_kmz, north_kmz = bounds_4326
-                                    
                                     buf_jpg = io.BytesIO()
                                     Image.fromarray(img_8bit_kmz).save(buf_jpg, format='JPEG', quality=95)
-                                    
-                                    kml_content = f"""<?xml version="1.0" encoding="UTF-8"?>
-<kml xmlns="http://www.opengis.net/kml/2.2">
-  <GroundOverlay>
-    <name>{fname}</name>
-    <Icon><href>overlay.jpg</href></Icon>
-    <LatLonBox>
-      <north>{north_kmz}</north>
-      <south>{south_kmz}</south>
-      <east>{east_kmz}</east>
-      <west>{west_kmz}</west>
-    </LatLonBox>
-  </GroundOverlay>
-</kml>"""
-                                    # Crear KMZ (ZIP con doc.kml y overlay.jpg)
+                                    kml_content = f"""<?xml version="1.0" encoding="UTF-8"?><kml xmlns="http://www.opengis.net/kml/2.2"><GroundOverlay><name>{fname}</name><Icon><href>overlay.jpg</href></Icon><LatLonBox><north>{north_kmz}</north><south>{south_kmz}</south><east>{east_kmz}</east><west>{west_kmz}</west></LatLonBox></GroundOverlay></kml>"""
                                     kmz_buf = io.BytesIO()
                                     with zipfile.ZipFile(kmz_buf, "w") as zf:
                                         zf.writestr("doc.kml", kml_content)
                                         zf.writestr("overlay.jpg", buf_jpg.getvalue())
-                                    
                                     results['kmz'] = (kmz_buf.getvalue(), f"{fname}.kmz")
                                 
                                 st.session_state.hd_file_ready = results
                                 st.rerun()
                     else:
-                        # Si el archivo está listo, mostramos directamente los botones de descarga final
                         st.success("✅ ¡Archivos HD listos!")
                         for key, (data, name) in st.session_state.hd_file_ready.items():
                             st.download_button(f"📥 Descargar {name}", data, name, key=f"dl_{key}", use_container_width=True)
@@ -559,13 +533,13 @@ if bbox and search_allowed:
                             for s in pool:
                                 if processed >= video_max_images: break
                                 try:
-                                    # Aplicar Resampling.cubic (enum) también en video
                                     data_f = stackstac.stack(s, assets=selected_assets, bounds_latlon=bbox, epsg=epsg_code, resolution=conf["res"]*2, resampling=Resampling.cubic).squeeze().compute()
                                     img_np = np.moveaxis(data_f.sel(band=selected_assets).values, 0, -1)
                                     img_8bit = normalize_image_robust(img_np, 2, percentil_alto, conf["scale"], conf["offset"])
                                     pil_img = Image.fromarray(img_8bit)
                                     target_w = 1000
-                                    h_res = int(pil_img.height * (target_w / pil_img.width))
+                                    # Asegurar que el alto sea par para compatibilidad con Android
+                                    h_res = (int(pil_img.height * (target_w / pil_img.width)) // 2) * 2
                                     pil_img = pil_img.resize((target_w, h_res), Image.Resampling.LANCZOS)
                                     frames_list.append((s.datetime, add_text_to_image(pil_img, s.datetime.strftime('%d/%m/%Y'))))
                                     processed += 1
@@ -573,11 +547,11 @@ if bbox and search_allowed:
                             
                             if frames_list:
                                 status.update(label="Ensamblando...", state="running")
-                                # El video siempre se ordena cronológicamente (más vieja a más nueva)
                                 frames_list.sort(key=lambda x: x[0])
                                 images_only = [np.array(f[1]) for f in frames_list]
                                 with tempfile.NamedTemporaryFile(suffix='.mp4', delete=False) as tmp:
-                                    writer = imageio.get_writer(tmp.name, fps=video_fps, codec='libx264', quality=8)
+                                    # pixelformat='yuv420p' es fundamental para compatibilidad móvil
+                                    writer = imageio.get_writer(tmp.name, fps=video_fps, codec='libx264', quality=8, pixelformat='yuv420p')
                                     for f in images_only: writer.append_data(f)
                                     writer.close()
                                     with open(tmp.name, 'rb') as f: st.session_state.video_result = f.read()
