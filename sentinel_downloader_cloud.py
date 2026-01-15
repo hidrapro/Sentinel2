@@ -345,8 +345,8 @@ if map_data and map_data.get('all_drawings'):
     lats = [c[1] for c in coords]
     
     if max(lons) - min(lons) > 300:
-        west = max([l for l in lons if l < 0])
-        east = min([l for l in lons if l > 0])
+        west = max([l l for l in lons if l < 0])
+        east = min([l l for l in lons if l > 0])
         bbox = [west, min(lats), east, max(lats)]
     else:
         bbox = [min(lons), min(lats), max(lons), max(lats)]
@@ -461,8 +461,8 @@ if bbox and search_allowed:
                     if st.session_state.is_generating_preview:
                         try:
                             with st.spinner("Procesando..."):
-                                # Se agrega resampling cubic para asegurar que la banda 11 (20m) se vea bien a 10m
-                                data_raw = stackstac.stack(item, assets=selected_assets, bounds_latlon=bbox, epsg=epsg_code, resolution=conf["res"]*2, resampling="cubic").squeeze().compute()
+                                # Se usa Resampling.cubic (enum) para evitar el ValueError
+                                data_raw = stackstac.stack(item, assets=selected_assets, bounds_latlon=bbox, epsg=epsg_code, resolution=conf["res"]*2, resampling=Resampling.cubic).squeeze().compute()
                                 img_np = np.moveaxis(data_raw.sel(band=selected_assets).values, 0, -1)
                                 st.session_state.preview_image = normalize_image_robust(img_np, 2, percentil_alto, conf["scale"], conf["offset"])
                         finally:
@@ -476,8 +476,8 @@ if bbox and search_allowed:
                     if st.session_state.hd_file_ready is None:
                         if st.button("🚀 Generar Archivos HD", key="gen_hd_btn"):
                             with st.status("Preparando HD..."):
-                                # Se agrega resampling cubic para que el resample de la B11 a 10m sea perfecto
-                                data_raw = stackstac.stack(item, assets=selected_assets, bounds_latlon=bbox, epsg=epsg_code, resolution=res_final, resampling="cubic").squeeze()
+                                # Se usa Resampling.cubic (enum) para asegurar compatibilidad
+                                data_raw = stackstac.stack(item, assets=selected_assets, bounds_latlon=bbox, epsg=epsg_code, resolution=res_final, resampling=Resampling.cubic).squeeze()
                                 data_final = data_raw.sel(band=selected_assets)
                                 fname = f"{sat_choice.replace(' ', '_')}_{item.datetime.strftime('%Y%m%d')}_{viz_mode.replace(' ','')}"
                                 
@@ -498,7 +498,6 @@ if bbox and search_allowed:
                                 # KMZ especializado (Reproyectado a EPSG:4326 para Google Earth)
                                 if "KMZ" in formato_descarga or formato_descarga == "Todos":
                                     # Para Google Earth, necesitamos re-proyectar a EPSG:4326 
-                                    # Usamos remuestreo bilineal para mantener la nitidez visual de los 10m
                                     data_4326 = data_final.rio.reproject("EPSG:4326", resampling=Resampling.bilinear)
                                     img_np = np.moveaxis(data_4326.compute().values, 0, -1)
                                     img_8bit_kmz = normalize_image_robust(img_np, 2, percentil_alto, conf["scale"], conf["offset"])
@@ -557,8 +556,8 @@ if bbox and search_allowed:
                             for s in pool:
                                 if processed >= video_max_images: break
                                 try:
-                                    # Aplicar resample cubic también en video para bandas de 20m
-                                    data_f = stackstac.stack(s, assets=selected_assets, bounds_latlon=bbox, epsg=epsg_code, resolution=conf["res"]*2, resampling="cubic").squeeze().compute()
+                                    # Aplicar Resampling.cubic (enum) también en video
+                                    data_f = stackstac.stack(s, assets=selected_assets, bounds_latlon=bbox, epsg=epsg_code, resolution=conf["res"]*2, resampling=Resampling.cubic).squeeze().compute()
                                     img_np = np.moveaxis(data_f.sel(band=selected_assets).values, 0, -1)
                                     img_8bit = normalize_image_robust(img_np, 2, percentil_alto, conf["scale"], conf["offset"])
                                     pil_img = Image.fromarray(img_8bit)
