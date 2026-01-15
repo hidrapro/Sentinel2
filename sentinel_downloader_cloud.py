@@ -289,7 +289,8 @@ with st.sidebar:
     )
     conf = SAT_CONFIG[sat_choice]
     
-    viz_mode = st.radio("Visualización", options=list(conf["viz"].keys()), horizontal=True)
+    # Se establece index=1 para que "Agua-Tierra" sea el valor por defecto (suponiendo que es la segunda opción en viz)
+    viz_mode = st.radio("Visualización", options=list(conf["viz"].keys()), index=1, horizontal=True)
     selected_assets = conf["viz"][viz_mode]
 
     st.markdown("---")
@@ -432,7 +433,9 @@ if bbox and search_allowed:
     if 'scenes_before' in st.session_state:
         full_pool = st.session_state['scenes_before'] + st.session_state['scenes_after']
         all_scenes = [s for s in full_pool if s.datetime.strftime('%d/%m/%Y') not in exclude_dates]
-        all_scenes.sort(key=lambda x: x.datetime)
+        
+        # Se ordena all_scenes por fecha de forma descendente (más nueva primero)
+        all_scenes.sort(key=lambda x: x.datetime, reverse=True)
         
         if all_scenes:
             if formato_descarga != "Video MP4":
@@ -570,6 +573,7 @@ if bbox and search_allowed:
                             
                             if frames_list:
                                 status.update(label="Ensamblando...", state="running")
+                                # El video siempre se ordena cronológicamente (más vieja a más nueva)
                                 frames_list.sort(key=lambda x: x[0])
                                 images_only = [np.array(f[1]) for f in frames_list]
                                 with tempfile.NamedTemporaryFile(suffix='.mp4', delete=False) as tmp:
