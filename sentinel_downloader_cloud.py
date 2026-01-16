@@ -16,6 +16,11 @@ from PIL import Image, ImageDraw, ImageFont
 import io
 import imageio
 import zipfile
+import geopandas as gpd
+import fiona
+
+# Habilitar soporte para KML/KMZ en fiona
+fiona.drvsupport.supported_drivers['KML'] = 'rw'
 
 # --- CONFIGURACIÓN DE PÁGINA ---
 st.set_page_config(page_title="Satelites LandSat y Sentinel 2", layout="wide", page_icon="🛰️")
@@ -106,8 +111,6 @@ st.markdown("""
     }
     </style>
 """, unsafe_allow_html=True)
-
-st.title("🛰️ Visualizador y descarga de recortes")
 
 # --- INICIALIZACIÓN DE ESTADO ---
 if "is_generating_preview" not in st.session_state:
@@ -278,6 +281,20 @@ def add_text_to_image(img, text):
     draw.text((x_pos, y_pos), text, fill=(255, 255, 255), font=font)
     return img
 
+def load_kmz(file):
+    """Extrae el KML del KMZ y lo carga como GeoDataFrame"""
+    try:
+        with zipfile.ZipFile(file, 'r') as z:
+            # Buscar el archivo .kml principal dentro del kmz
+            kml_filename = next(f for f in z.namelist() if f.endswith('.kml'))
+            with z.open(kml_filename) as kml_file:
+                # Fiona puede leer el buffer directamente si se especifica el driver
+                gdf = gpd.read_file(kml_file, driver='KML')
+                return gdf
+    except Exception as e:
+        st.sidebar.error(f"Error al cargar KMZ: {e}")
+        return None
+
 # --- SIDEBAR ---
 with st.sidebar:
     st.subheader("🛰️ Plataforma")
@@ -292,6 +309,15 @@ with st.sidebar:
     # Se establece index=1 para que "Agua-Tierra" sea el valor por defecto
     viz_mode = st.radio("Visualización", options=list(conf["viz"].keys()), index=1, horizontal=True)
     selected_assets = conf["viz"][viz_mode]
+
+    st.markdown("---")
+    st.subheader("📍 Referencias Externas")
+    uploaded_kmz = st.file_uploader("Importar KMZ (opcional)", type=["kmz"])
+    kmz_gdf = None
+    if uploaded_kmz:
+        kmz_gdf = load_kmz(uploaded_kmz)
+        if kmz_gdf is not None:
+            st.success("✅ KMZ cargado")
 
     st.markdown("---")
     st.subheader("📅 Tiempo y Nubes")
@@ -332,7 +358,17 @@ st.subheader("1. Área de Interés (AOI)")
 st.markdown('<span class="instruction-text">Click sobre la herramienta de dibujo de rectangulo AOI, icono cuadrado.</span>', unsafe_allow_html=True)
 
 tile_urls = {"OpenStreetMap": "OpenStreetMap", "Satélite (Esri)": "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}", "Topográfico (OpenTopo)": "https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png"}
-m = folium.Map(location=[-35.444, -60.884], zoom_start=13, tiles=tile_urls[map_style] if map_style == "OpenStreetMap" else tile_urls[map_style], attr="Tiles &copy; Esri / OpenTopoMap" if map_style != "OpenStreetMap" else None)
+
+# Centrar el mapa en el KMZ si existe
+if kmz_gdf is not None:
+    center_lat = kmz_gdf.geometry.centroid.y.mean()
+    center_lon = kmz_gdf.geometry.centroid.x.mean()
+    m = folium.Map(location=[center_lat, center_lon], zoom_start=13, tiles=tile_urls[map_style] if map_style == "OpenStreetMap" else tile_urls[map_style], attr="Tiles &copy; Esri / OpenTopoMap" if map_style != "OpenStreetMap" else None)
+    # Añadir KMZ al mapa
+    folium.GeoJson(kmz_gdf, name="Referencia KMZ", style_function=lambda x: {'color': 'red', 'weight': 2}).add_to(m)
+else:
+    m = folium.Map(location=[-35.444, -60.884], zoom_start=13, tiles=tile_urls[map_style] if map_style == "OpenStreetMap" else tile_urls[map_style], attr="Tiles &copy; Esri / OpenTopoMap" if map_style != "OpenStreetMap" else None)
+
 LocateControl().add_to(m)
 Draw(draw_options={'polyline':False, 'polygon':False, 'circle':False, 'marker':False, 'circlemarker':False, 'rectangle':True}).add_to(m)
 map_data = st_folium(m, use_container_width=True, height=400, key="main_map")
