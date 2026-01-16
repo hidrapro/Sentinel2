@@ -127,6 +127,8 @@ if "video_result" not in st.session_state:
     st.session_state.video_result = None
 if "hd_file_ready" not in st.session_state:
     st.session_state.hd_file_ready = None
+if "epsg_code" not in st.session_state:
+    st.session_state.epsg_code = None
 
 # --- DICCIONARIO DE CONFIGURACIÓN POR SATÉLITE ---
 SAT_CONFIG = {
@@ -281,37 +283,44 @@ def add_text_to_image(img, text):
     draw.text((x_pos, y_pos), text, fill=(255, 255, 255), font=font)
     return img
 
-def draw_gdf_on_image(img, gdf, bounds, resolution, color="#FF0000", width=3):
-    """Dibuja geometrías del GeoDataFrame sobre la imagen PIL"""
+def draw_gdf_on_image(img, gdf, bounds, color="#FF0000", width=3):
+    """Dibuja geometrías del GeoDataFrame sobre la imagen PIL con escala calculada"""
     if gdf is None or gdf.empty:
         return img
     
     draw = ImageDraw.Draw(img)
     xmin, ymin, xmax, ymax = bounds
+    img_w, img_h = img.size
+    
+    # Escala real píxel/metro basada en el recorte actual
+    scale_x = img_w / (xmax - xmin)
+    scale_y = img_h / (ymax - ymin)
     
     for geom in gdf.geometry:
-        if geom.is_empty:
+        if geom.is_empty: continue
+        
+        # Manejo unificado de geometrías
+        if geom.geom_type == 'Polygon':
+            parts = [geom.exterior]
+        elif geom.geom_type == 'MultiPolygon':
+            parts = [p.exterior for p in geom.geoms]
+        elif geom.geom_type == 'LineString':
+            parts = [geom]
+        elif geom.geom_type == 'MultiLineString':
+            parts = geom.geoms
+        else:
             continue
             
-        # Solo dibujamos LineStrings o Polygons (contornos)
-        if geom.geom_type in ['LineString', 'MultiLineString', 'Polygon', 'MultiPolygon']:
-            # Extraer las coordenadas como una lista de listas
-            if geom.geom_type.startswith('Multi'):
-                parts = geom.geoms
-            else:
-                parts = [geom]
-                
-            for part in parts:
-                coords = list(part.exterior.coords) if hasattr(part, 'exterior') else list(part.coords)
-                pixel_coords = []
-                for x, y in coords:
-                    # Convertir coordenadas geográficas a píxeles
-                    px = (x - xmin) / resolution
-                    py = (ymax - y) / resolution
-                    pixel_coords.append((px, py))
-                
-                if len(pixel_coords) > 1:
-                    draw.line(pixel_coords, fill=color, width=width)
+        for part in parts:
+            coords = list(part.coords)
+            pixel_coords = []
+            for x, y in coords:
+                px = (x - xmin) * scale_x
+                py = (ymax - y) * scale_y # Invertir eje Y para píxeles
+                pixel_coords.append((px, py))
+            
+            if len(pixel_coords) > 1:
+                draw.line(pixel_coords, fill=color, width=width)
     return img
 
 def load_kmz(file):
@@ -321,6 +330,8 @@ def load_kmz(file):
             kml_filename = next(f for f in z.namelist() if f.endswith('.kml'))
             with z.open(kml_filename) as kml_file:
                 gdf = gpd.read_file(kml_file, driver='KML')
+                if gdf.crs is None:
+                    gdf.set_crs("EPSG:4326", inplace=True)
                 return gdf
     except Exception as e:
         st.sidebar.error(f"Error al cargar KMZ: {e}")
@@ -405,7 +416,6 @@ map_data = st_folium(m, use_container_width=True, height=400, key="main_map")
 
 bbox = None
 search_allowed = True
-epsg_code = None
 
 if map_data and map_data.get('all_drawings'):
     coords = map_data['all_drawings'][-1]['geometry']['coordinates'][0]
@@ -430,7 +440,7 @@ if map_data and map_data.get('all_drawings'):
     else:
         st.info(f"📏 Área seleccionada: {area_km2:.1f} km²")
         
-    epsg_code = get_utm_epsg((min(lons)+max(lons))/2, (min(lats)+max(lats))/2)
+    st.session_state.epsg_code = get_utm_epsg((min(lons)+max(lons))/2, (min(lats)+max(lats))/2)
 
 # --- LÓGICA DE BÚSQUEDA ---
 if bbox and search_allowed:
@@ -478,7 +488,7 @@ if bbox and search_allowed:
                         status.update(label=f"Chequeando {i+1}/{len(all_items)}...")
                         check_asset = selected_assets[0]
                         if check_asset not in item.assets: check_asset = list(item.assets.keys())[0]
-                        pct = check_nodata_fast(item, bbox, epsg_code, check_asset)
+                        pct = check_nodata_fast(item, bbox, st.session_state.epsg_code, check_asset)
                         item.properties["custom_nodata_pct"] = pct
                 st.session_state['scenes_before'] = [i for i in all_items if i.datetime.replace(tzinfo=None) < fecha_referencia]
                 st.session_state['scenes_after'] = [i for i in all_items if i.datetime.replace(tzinfo=None) >= fecha_referencia]
@@ -530,7 +540,7 @@ if bbox and search_allowed:
                     if st.session_state.is_generating_preview:
                         try:
                             with st.spinner("Procesando..."):
-                                data_raw = stackstac.stack(item, assets=selected_assets, bounds_latlon=bbox, epsg=epsg_code, resolution=conf["res"]*2, resampling=Resampling.cubic).squeeze().compute()
+                                data_raw = stackstac.stack(item, assets=selected_assets, bounds_latlon=bbox, epsg=st.session_state.epsg_code, resolution=conf["res"]*2, resampling=Resampling.cubic).squeeze().compute()
                                 img_np = np.moveaxis(data_raw.sel(band=selected_assets).values, 0, -1)
                                 st.session_state.preview_image = normalize_image_robust(img_np, 2, percentil_alto, conf["scale"], conf["offset"])
                         finally:
@@ -543,7 +553,7 @@ if bbox and search_allowed:
                     if st.session_state.hd_file_ready is None:
                         if st.button("🚀 Generar Archivos HD", key="gen_hd_btn"):
                             with st.status("Preparando HD..."):
-                                data_raw = stackstac.stack(item, assets=selected_assets, bounds_latlon=bbox, epsg=epsg_code, resolution=res_final, resampling=Resampling.cubic).squeeze()
+                                data_raw = stackstac.stack(item, assets=selected_assets, bounds_latlon=bbox, epsg=st.session_state.epsg_code, resolution=res_final, resampling=Resampling.cubic).squeeze()
                                 data_final = data_raw.sel(band=selected_assets)
                                 fname = f"{sat_choice.replace(' ', '_')}_{item.datetime.strftime('%Y%m%d')}_{viz_mode.replace(' ','')}"
                                 
@@ -595,32 +605,31 @@ if bbox and search_allowed:
                         st.error(f"Sin imágenes que cumplan (Máx: {video_max_nodata}%).")
                     else:
                         with st.status("Generando frames...") as status:
-                            # Preparar KMZ una sola vez reproyectado
                             video_kmz = None
-                            if kmz_gdf is not None and video_overlay_kmz:
-                                video_kmz = kmz_gdf.to_crs(epsg=epsg_code)
+                            if kmz_gdf is not None and video_overlay_kmz and st.session_state.epsg_code:
+                                try:
+                                    video_kmz = kmz_gdf.to_crs(epsg=st.session_state.epsg_code)
+                                except:
+                                    status.update(label="⚠️ Error reproyectando KMZ. Se omitirá traza.", state="running")
 
                             processed = 0
                             for s in pool:
                                 if processed >= video_max_images: break
                                 try:
-                                    # Generamos a resolución moderada para el video
-                                    data_f = stackstac.stack(s, assets=selected_assets, bounds_latlon=bbox, epsg=epsg_code, resolution=conf["res"]*2, resampling=Resampling.cubic).squeeze().compute()
+                                    data_f = stackstac.stack(s, assets=selected_assets, bounds_latlon=bbox, epsg=st.session_state.epsg_code, resolution=conf["res"]*2, resampling=Resampling.cubic).squeeze().compute()
                                     img_np = np.moveaxis(data_f.sel(band=selected_assets).values, 0, -1)
                                     img_8bit = normalize_image_robust(img_np, 2, percentil_alto, conf["scale"], conf["offset"])
                                     pil_img = Image.fromarray(img_8bit)
                                     
-                                    # Dibujar traza KMZ antes de redimensionar
                                     if video_kmz is not None:
                                         bounds_local = data_f.rio.bounds() # xmin, ymin, xmax, ymax
-                                        pil_img = draw_gdf_on_image(pil_img, video_kmz, bounds_local, conf["res"]*2, color=video_kmz_color, width=4)
+                                        pil_img = draw_gdf_on_image(pil_img, video_kmz, bounds_local, color=video_kmz_color, width=4)
 
                                     target_w = 720
                                     target_w = (target_w // 2) * 2
                                     h_res = (int(pil_img.height * (target_w / pil_img.width)) // 2) * 2
                                     pil_img = pil_img.resize((target_w, h_res), Image.Resampling.LANCZOS)
                                     
-                                    # Agregar fecha
                                     pil_img = add_text_to_image(pil_img, s.datetime.strftime('%d/%m/%Y'))
                                     frames_list.append((s.datetime, pil_img))
                                     processed += 1
