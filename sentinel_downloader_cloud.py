@@ -284,7 +284,7 @@ def add_text_to_image(img, text):
     return img
 
 def draw_gdf_on_image(img, gdf, bounds, color="#FF0000", width=3):
-    """Dibuja geometrías del GeoDataFrame sobre la imagen PIL con escala calculada"""
+    """Dibuja geometrías del GeoDataFrame sobre la imagen PIL manejando coordenadas 3D"""
     if gdf is None or gdf.empty:
         return img
     
@@ -292,35 +292,40 @@ def draw_gdf_on_image(img, gdf, bounds, color="#FF0000", width=3):
     xmin, ymin, xmax, ymax = bounds
     img_w, img_h = img.size
     
-    # Escala real píxel/metro basada en el recorte actual
-    scale_x = img_w / (xmax - xmin)
-    scale_y = img_h / (ymax - ymin)
+    dx = (xmax - xmin)
+    dy = (ymax - ymin)
+    if dx == 0 or dy == 0: return img
+    
+    scale_x = img_w / dx
+    scale_y = img_h / dy
     
     for geom in gdf.geometry:
-        if geom.is_empty: continue
-        
-        # Manejo unificado de geometrías
-        if geom.geom_type == 'Polygon':
-            parts = [geom.exterior]
-        elif geom.geom_type == 'MultiPolygon':
-            parts = [p.exterior for p in geom.geoms]
-        elif geom.geom_type == 'LineString':
-            parts = [geom]
-        elif geom.geom_type == 'MultiLineString':
-            parts = geom.geoms
-        else:
+        try:
+            if geom is None or geom.is_empty: continue
+            
+            # Unificar MultiGeometrías
+            geoms = [geom] if not hasattr(geom, 'geoms') else geom.geoms
+            
+            for g in geoms:
+                # Extraer partes lineales
+                if hasattr(g, 'exterior'): # Polígono
+                    parts = [g.exterior]
+                elif hasattr(g, 'coords'): # LineString
+                    parts = [g]
+                else: continue
+                
+                for part in parts:
+                    pixel_coords = []
+                    for c in part.coords:
+                        # Ignorar Z (altitud) si existe: c[0]=x, c[1]=y
+                        px = (c[0] - xmin) * scale_x
+                        py = (ymax - c[1]) * scale_y
+                        pixel_coords.append((px, py))
+                    
+                    if len(pixel_coords) > 1:
+                        draw.line(pixel_coords, fill=color, width=width)
+        except:
             continue
-            
-        for part in parts:
-            coords = list(part.coords)
-            pixel_coords = []
-            for x, y in coords:
-                px = (x - xmin) * scale_x
-                py = (ymax - y) * scale_y # Invertir eje Y para píxeles
-                pixel_coords.append((px, py))
-            
-            if len(pixel_coords) > 1:
-                draw.line(pixel_coords, fill=color, width=width)
     return img
 
 def load_kmz(file):
@@ -634,6 +639,7 @@ if bbox and search_allowed:
                                     frames_list.append((s.datetime, pil_img))
                                     processed += 1
                                 except Exception as e:
+                                    # st.write(f"Frame ignorado por error: {e}") # Debug opcional
                                     continue
                             
                             if frames_list:
