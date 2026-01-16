@@ -281,14 +281,45 @@ def add_text_to_image(img, text):
     draw.text((x_pos, y_pos), text, fill=(255, 255, 255), font=font)
     return img
 
+def draw_gdf_on_image(img, gdf, bounds, resolution, color="#FF0000", width=3):
+    """Dibuja geometrías del GeoDataFrame sobre la imagen PIL"""
+    if gdf is None or gdf.empty:
+        return img
+    
+    draw = ImageDraw.Draw(img)
+    xmin, ymin, xmax, ymax = bounds
+    
+    for geom in gdf.geometry:
+        if geom.is_empty:
+            continue
+            
+        # Solo dibujamos LineStrings o Polygons (contornos)
+        if geom.geom_type in ['LineString', 'MultiLineString', 'Polygon', 'MultiPolygon']:
+            # Extraer las coordenadas como una lista de listas
+            if geom.geom_type.startswith('Multi'):
+                parts = geom.geoms
+            else:
+                parts = [geom]
+                
+            for part in parts:
+                coords = list(part.exterior.coords) if hasattr(part, 'exterior') else list(part.coords)
+                pixel_coords = []
+                for x, y in coords:
+                    # Convertir coordenadas geográficas a píxeles
+                    px = (x - xmin) / resolution
+                    py = (ymax - y) / resolution
+                    pixel_coords.append((px, py))
+                
+                if len(pixel_coords) > 1:
+                    draw.line(pixel_coords, fill=color, width=width)
+    return img
+
 def load_kmz(file):
     """Extrae el KML del KMZ y lo carga como GeoDataFrame"""
     try:
         with zipfile.ZipFile(file, 'r') as z:
-            # Buscar el archivo .kml principal dentro del kmz
             kml_filename = next(f for f in z.namelist() if f.endswith('.kml'))
             with z.open(kml_filename) as kml_file:
-                # Fiona puede leer el buffer directamente si se especifica el driver
                 gdf = gpd.read_file(kml_file, driver='KML')
                 return gdf
     except Exception as e:
@@ -306,7 +337,6 @@ with st.sidebar:
     )
     conf = SAT_CONFIG[sat_choice]
     
-    # Se establece index=1 para que "Agua-Tierra" sea el valor por defecto
     viz_mode = st.radio("Visualización", options=list(conf["viz"].keys()), index=1, horizontal=True)
     selected_assets = conf["viz"][viz_mode]
 
@@ -352,6 +382,8 @@ with st.sidebar:
             video_fps = st.slider("FPS", 1, 5, 2)
             video_max_images = st.slider("Máx. frames", 3, 60, 15)
             video_max_nodata = st.slider("Máx. Sin Datos (%)", 0, 40, 5)
+            video_overlay_kmz = st.checkbox("Superponer KMZ en video", value=True)
+            video_kmz_color = st.color_picker("Color traza KMZ", "#FF0000")
 
 # --- MAPA ---
 st.subheader("1. Área de Interés (AOI)")
@@ -359,12 +391,10 @@ st.markdown('<span class="instruction-text">Click sobre la herramienta de dibujo
 
 tile_urls = {"OpenStreetMap": "OpenStreetMap", "Satélite (Esri)": "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}", "Topográfico (OpenTopo)": "https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png"}
 
-# Centrar el mapa en el KMZ si existe
 if kmz_gdf is not None:
     center_lat = kmz_gdf.geometry.centroid.y.mean()
     center_lon = kmz_gdf.geometry.centroid.x.mean()
     m = folium.Map(location=[center_lat, center_lon], zoom_start=13, tiles=tile_urls[map_style] if map_style == "OpenStreetMap" else tile_urls[map_style], attr="Tiles &copy; Esri / OpenTopoMap" if map_style != "OpenStreetMap" else None)
-    # Añadir KMZ al mapa
     folium.GeoJson(kmz_gdf, name="Referencia KMZ", style_function=lambda x: {'color': 'red', 'weight': 2}).add_to(m)
 else:
     m = folium.Map(location=[-35.444, -60.884], zoom_start=13, tiles=tile_urls[map_style] if map_style == "OpenStreetMap" else tile_urls[map_style], attr="Tiles &copy; Esri / OpenTopoMap" if map_style != "OpenStreetMap" else None)
@@ -375,6 +405,8 @@ map_data = st_folium(m, use_container_width=True, height=400, key="main_map")
 
 bbox = None
 search_allowed = True
+epsg_code = None
+
 if map_data and map_data.get('all_drawings'):
     coords = map_data['all_drawings'][-1]['geometry']['coordinates'][0]
     lons_raw = [c[0] for c in coords]
@@ -469,8 +501,6 @@ if bbox and search_allowed:
     if 'scenes_before' in st.session_state:
         full_pool = st.session_state['scenes_before'] + st.session_state['scenes_after']
         all_scenes = [s for s in full_pool if s.datetime.strftime('%d/%m/%Y') not in exclude_dates]
-        
-        # Ordenar por fecha descendente (más nueva primero)
         all_scenes.sort(key=lambda x: x.datetime, reverse=True)
         
         if all_scenes:
@@ -565,29 +595,43 @@ if bbox and search_allowed:
                         st.error(f"Sin imágenes que cumplan (Máx: {video_max_nodata}%).")
                     else:
                         with st.status("Generando frames...") as status:
+                            # Preparar KMZ una sola vez reproyectado
+                            video_kmz = None
+                            if kmz_gdf is not None and video_overlay_kmz:
+                                video_kmz = kmz_gdf.to_crs(epsg=epsg_code)
+
                             processed = 0
                             for s in pool:
                                 if processed >= video_max_images: break
                                 try:
+                                    # Generamos a resolución moderada para el video
                                     data_f = stackstac.stack(s, assets=selected_assets, bounds_latlon=bbox, epsg=epsg_code, resolution=conf["res"]*2, resampling=Resampling.cubic).squeeze().compute()
                                     img_np = np.moveaxis(data_f.sel(band=selected_assets).values, 0, -1)
                                     img_8bit = normalize_image_robust(img_np, 2, percentil_alto, conf["scale"], conf["offset"])
                                     pil_img = Image.fromarray(img_8bit)
-                                    target_w = 720  # 720p es óptimo para WhatsApp
-                                    # Asegurar que AMBAS dimensiones sean pares para compatibilidad con Android
+                                    
+                                    # Dibujar traza KMZ antes de redimensionar
+                                    if video_kmz is not None:
+                                        bounds_local = data_f.rio.bounds() # xmin, ymin, xmax, ymax
+                                        pil_img = draw_gdf_on_image(pil_img, video_kmz, bounds_local, conf["res"]*2, color=video_kmz_color, width=4)
+
+                                    target_w = 720
                                     target_w = (target_w // 2) * 2
                                     h_res = (int(pil_img.height * (target_w / pil_img.width)) // 2) * 2
                                     pil_img = pil_img.resize((target_w, h_res), Image.Resampling.LANCZOS)
-                                    frames_list.append((s.datetime, add_text_to_image(pil_img, s.datetime.strftime('%d/%m/%Y'))))
+                                    
+                                    # Agregar fecha
+                                    pil_img = add_text_to_image(pil_img, s.datetime.strftime('%d/%m/%Y'))
+                                    frames_list.append((s.datetime, pil_img))
                                     processed += 1
-                                except: continue
+                                except Exception as e:
+                                    continue
                             
                             if frames_list:
                                 status.update(label="Ensamblando...", state="running")
                                 frames_list.sort(key=lambda x: x[0])
                                 images_only = [np.array(f[1]) for f in frames_list]
                                 with tempfile.NamedTemporaryFile(suffix='.mp4', delete=False) as tmp:
-                                    # Configuración optimizada para WhatsApp y Android
                                     writer = imageio.get_writer(
                                         tmp.name, 
                                         fps=video_fps, 
@@ -597,11 +641,11 @@ if bbox and search_allowed:
                                         macro_block_size=2,
                                         ffmpeg_params=[
                                             '-movflags', '+faststart',
-                                            '-profile:v', 'baseline',  # Perfil más compatible
-                                            '-level', '3.0',           # Nivel compatible con todos los dispositivos
-                                            '-maxrate', '2M',          # Bitrate máximo para WhatsApp
-                                            '-bufsize', '2M',          # Buffer size
-                                            '-an'                      # Sin audio (evita problemas)
+                                            '-profile:v', 'baseline',
+                                            '-level', '3.0',
+                                            '-maxrate', '2M',
+                                            '-bufsize', '2M',
+                                            '-an'
                                         ]
                                     )
                                     for f in images_only: writer.append_data(f)
@@ -612,7 +656,7 @@ if bbox and search_allowed:
 
                 if st.session_state.video_result is not None:
                     st.video(st.session_state.video_result, autoplay=True)
-                    st.download_button("📥 Descargar MP4", st.session_state.video_result, "serie.mp4", key="dl_vid")
+                    st.download_button("📥 Descargar MP4 con Traza", st.session_state.video_result, "serie_temporal_canal.mp4", key="dl_vid")
 
 st.markdown("---")
 st.caption("Ing. Luis A. Carnaghi (lcarnaghi@gmail.com) - Creador.")
