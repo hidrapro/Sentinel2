@@ -269,17 +269,49 @@ def normalize_image_robust(img_arr, p_low=2, p_high=98, scale=1.0, offset=0.0):
 
 def add_text_to_image(img, text):
     draw = ImageDraw.Draw(img)
-    font_size = int(img.width * 0.05)
+    # Aumentamos la escala de la fuente al 8% del ancho de la imagen (antes 5%)
+    font_size = int(img.width * 0.08) 
     font = None
-    font_paths = ["/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", "arial.ttf"]
+    
+    # Lista ampliada y robusta para cubrir distribuciones de Linux, Windows y macOS
+    font_paths = [
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+        "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
+        "arial.ttf",
+        "C:\\Windows\\Fonts\\arial.ttf",
+        "C:\\Windows\\Fonts\\arialbd.ttf",
+        "/System/Library/Fonts/Supplemental/Arial Bold.ttf",
+        "/System/Library/Fonts/Helvetica.ttc"
+    ]
+    
+    # Intentar cargar una fuente TrueType real
     for path in font_paths:
-        try: font = ImageFont.truetype(path, font_size); break
-        except: continue
-    if font is None: font = ImageFont.load_default()
+        try: 
+            font = ImageFont.truetype(path, font_size)
+            break
+        except: 
+            continue
+            
+    # Red de seguridad mejorada:
+    if font is None: 
+        try:
+            # Para versiones de Pillow >= 10.1.0 que ya permiten escalar la fuente por defecto
+            font = ImageFont.load_default(size=font_size)
+        except TypeError:
+            # Fallback final para versiones antiguas de Pillow (seguirá viéndose chica, debes instalar TTF en el server)
+            font = ImageFont.load_default()
+            
     bbox_txt = draw.textbbox((0, 0), text, font=font)
-    tw, th = bbox_txt[2] - bbox_txt[0], bbox_txt[3] - bbox_txt[1]
-    x_pos, y_pos = (img.width - tw) // 2, img.height - th - int(font_size * 0.3)
-    draw.rectangle([(x_pos-5, y_pos-5), (x_pos+tw+5, y_pos+th+5)], fill=(0,0,0,180))
+    tw, th = bbox_txt - bbox_txt, bbox_txt - bbox_txt
+    
+    # Posición centrada abajo, con mayor margen
+    x_pos, y_pos = (img.width - tw) // 2, img.height - th - int(font_size * 0.5)
+    
+    # Fondo semitransparente con padding dinámico
+    padding = int(font_size * 0.2)
+    draw.rectangle([(x_pos-padding, y_pos-padding), (x_pos+tw+padding, y_pos+th+padding)], fill=(0,0,0,180))
+    
+    # Texto
     draw.text((x_pos, y_pos), text, fill=(255, 255, 255), font=font)
     return img
 
