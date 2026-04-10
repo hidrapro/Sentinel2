@@ -109,22 +109,6 @@ st.markdown("""
         70% { box-shadow: 0 0 0 10px rgba(46, 125, 50, 0); }
         100% { box-shadow: 0 0 0 0 rgba(46, 125, 50, 0); }
     }
-    /* Cambiar el fondo global y del sidebar a blanco */
-    [data-testid="stAppViewContainer"], [data-testid="stSidebar"] {
-        background-color: white !important;
-    }
-
-    /* Cambiar el color de los párrafos, spans, etiquetas y elementos de lista estándar a negro */
-    html, body, [class*="st-"] p, [class*="st-"] span, [class*="st-"] label, [class*="st-"] li {
-        color: black !important;
-    }
-
-    /* Asegurar que los títulos (h1, h2, h3) también sean negros */
-    h1, h2, h3 {
-        color: black !important;
-    }
-
-    /* Nota: No hemos modificado los colores específicos para .result-text y .instruction-text definidos en tu código original para preservar esas distinciones visuales intencionales. Si también quisieras hacerlos negros, por favor házmelo saber. */
     </style>
 """, unsafe_allow_html=True)
 
@@ -284,12 +268,16 @@ def normalize_image_robust(img_arr, p_low=2, p_high=98, scale=1.0, offset=0.0):
         return np.zeros((*img.shape, 3), dtype=np.uint8)
 
 def add_text_to_image(img, text):
+    # Aseguramos que la imagen soporte transparencia para el fondo de la fecha
+    if img.mode != 'RGBA':
+        img = img.convert('RGBA')
+        
     draw = ImageDraw.Draw(img)
-    # Aumentamos la escala de la fuente al 8% del ancho de la imagen (antes 5%)
+    # Tamaño de fuente al 8% para visibilidad real en MP4
     font_size = int(img.width * 0.08) 
     font = None
     
-    # Lista ampliada y robusta para cubrir distribuciones de Linux, Windows y macOS
+    # Búsqueda robusta de fuentes
     font_paths = [
         "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
         "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
@@ -300,7 +288,6 @@ def add_text_to_image(img, text):
         "/System/Library/Fonts/Helvetica.ttc"
     ]
     
-    # Intentar cargar una fuente TrueType real
     for path in font_paths:
         try: 
             font = ImageFont.truetype(path, font_size)
@@ -308,28 +295,26 @@ def add_text_to_image(img, text):
         except: 
             continue
             
-    # Red de seguridad mejorada:
     if font is None: 
         try:
-            # Para versiones de Pillow >= 10.1.0 que ya permiten escalar la fuente por defecto
             font = ImageFont.load_default(size=font_size)
         except TypeError:
-            # Fallback final para versiones antiguas de Pillow (seguirá viéndose chica, debes instalar TTF en el server)
             font = ImageFont.load_default()
             
     bbox_txt = draw.textbbox((0, 0), text, font=font)
     tw, th = bbox_txt - bbox_txt, bbox_txt - bbox_txt
     
-    # Posición centrada abajo, con mayor margen
     x_pos, y_pos = (img.width - tw) // 2, img.height - th - int(font_size * 0.5)
-    
-    # Fondo semitransparente con padding dinámico
     padding = int(font_size * 0.2)
-    draw.rectangle([(x_pos-padding, y_pos-padding), (x_pos+tw+padding, y_pos+th+padding)], fill=(0,0,0,180))
     
-    # Texto
-    draw.text((x_pos, y_pos), text, fill=(255, 255, 255), font=font)
-    return img
+    # Fondo BLANCO semitransparente (RGB: 255, 255, 255)
+    draw.rectangle([(x_pos-padding, y_pos-padding), (x_pos+tw+padding, y_pos+th+padding)], fill=(255, 255, 255, 200))
+    
+    # Texto NEGRO (RGB: 0, 0, 0)
+    draw.text((x_pos, y_pos), text, fill=(0, 0, 0), font=font)
+    
+    # Volver al modo original (RGB) para compatibilidad con el resto de tu código (como imageio y JPEG)
+    return img.convert('RGB')
 
 def draw_gdf_on_image(img, gdf, bounds, color="#FF0000", width=3):
     """Dibuja geometrías del GeoDataFrame sobre la imagen PIL manejando coordenadas 3D"""
