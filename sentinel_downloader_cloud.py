@@ -268,34 +268,32 @@ def normalize_image_robust(img_arr, p_low=2, p_high=98, scale=1.0, offset=0.0):
         return np.zeros((*img.shape, 3), dtype=np.uint8)
 
 def add_text_to_image(img, text):
-    # Aseguramos que la imagen soporte transparencia para el fondo de la fecha
+    import os
+    import urllib.request
+    from PIL import ImageDraw, ImageFont
+
     if img.mode != 'RGBA':
         img = img.convert('RGBA')
         
     draw = ImageDraw.Draw(img)
-    # Tamaño de fuente al 8% para visibilidad real en MP4
+    # Tamaño de fuente al 8% del ancho de la imagen
     font_size = int(img.width * 0.08) 
-    font = None
     
-    # Búsqueda robusta de fuentes
-    font_paths = [
-        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
-        "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
-        "arial.ttf",
-        "C:\\Windows\\Fonts\\arial.ttf",
-        "C:\\Windows\\Fonts\\arialbd.ttf",
-        "/System/Library/Fonts/Supplemental/Arial Bold.ttf",
-        "/System/Library/Fonts/Helvetica.ttc"
-    ]
-    
-    for path in font_paths:
-        try: 
-            font = ImageFont.truetype(path, font_size)
-            break
-        except: 
-            continue
+    # --- LA OPCIÓN NUCLEAR ---
+    # Descargamos la fuente Roboto directamente si no existe en la carpeta
+    font_path = "Roboto-Bold.ttf"
+    if not os.path.exists(font_path):
+        try:
+            url = "https://github.com/googlefonts/roboto/raw/main/src/hinted/Roboto-Bold.ttf"
+            urllib.request.urlretrieve(url, font_path)
+        except Exception as e:
+            pass # Si no hay internet, falla silenciosamente y pasa al siguiente bloque
             
-    if font is None: 
+    try:
+        # Forzamos el uso de la fuente que acabamos de descargar
+        font = ImageFont.truetype(font_path, font_size)
+    except:
+        # Último recurso si no hubo internet o falló la descarga
         try:
             font = ImageFont.load_default(size=font_size)
         except TypeError:
@@ -313,7 +311,6 @@ def add_text_to_image(img, text):
     # Texto NEGRO (RGB: 0, 0, 0)
     draw.text((x_pos, y_pos), text, fill=(0, 0, 0), font=font)
     
-    # Volver al modo original (RGB) para compatibilidad con el resto de tu código (como imageio y JPEG)
     return img.convert('RGB')
 
 def draw_gdf_on_image(img, gdf, bounds, color="#FF0000", width=3):
