@@ -109,6 +109,22 @@ st.markdown("""
         70% { box-shadow: 0 0 0 10px rgba(46, 125, 50, 0); }
         100% { box-shadow: 0 0 0 0 rgba(46, 125, 50, 0); }
     }
+    /* Cambiar el fondo global y del sidebar a blanco */
+    [data-testid="stAppViewContainer"], [data-testid="stSidebar"] {
+        background-color: white !important;
+    }
+
+    /* Cambiar el color de los párrafos, spans, etiquetas y elementos de lista estándar a negro */
+    html, body, [class*="st-"] p, [class*="st-"] span, [class*="st-"] label, [class*="st-"] li {
+        color: black !important;
+    }
+
+    /* Asegurar que los títulos (h1, h2, h3) también sean negros */
+    h1, h2, h3 {
+        color: black !important;
+    }
+
+    /* Nota: No hemos modificado los colores específicos para .result-text y .instruction-text definidos en tu código original para preservar esas distinciones visuales intencionales. Si también quisieras hacerlos negros, por favor házmelo saber. */
     </style>
 """, unsafe_allow_html=True)
 
